@@ -1,0 +1,13 @@
+device:
+  layer: rpi4
+  user1pass: 'ChangeMe123!'
+  user1sudo: passwd
+
+image:
+  layer: image-rpios
+  name: gateway-pi4-dev
+  boot_part_size: 200%
+  root_part_size: 300%
+
+layer:
+  stack: gateway-base

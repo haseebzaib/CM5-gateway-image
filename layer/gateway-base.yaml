@@ -1,0 +1,12 @@
+# METABEGIN
+# X-Env-Layer-Name: gateway-base
+# X-Env-Layer-Category: gateway
+# X-Env-Layer-Desc: Base layer for the Zero Axis gateway image
+# X-Env-Layer-Requires: bookworm-minbase,openssh-server
+# METAEND
+---
+mmdebstrap:
+  packages:
+    - curl
+    - vim
+    - htop
