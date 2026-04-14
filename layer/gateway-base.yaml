@@ -1,12 +1,74 @@
 # METABEGIN
 # X-Env-Layer-Name: gateway-base
 # X-Env-Layer-Category: gateway
-# X-Env-Layer-Desc: Base layer for the Zero Axis gateway image
-# X-Env-Layer-Requires: bookworm-minbase,openssh-server
+# X-Env-Layer-Desc: Zero Axis gateway base for Debian 13 headless development
+# X-Env-Layer-Requires: trixie-minbase
 # METAEND
 ---
 mmdebstrap:
   packages:
+    - git
     - curl
+    - wget
     - vim
+    - less
+    - rsync
+    - tmux
+    - jq
+    - tree
+    - unzip
+    - zip
     - htop
+
+    - dnsutils
+    - ethtool
+    - traceroute
+    - mtr-tiny
+    - tcpdump
+    - iperf3
+    - nmap
+    - ncat
+    - socat
+
+    - usbutils
+    - pciutils
+    - lm-sensors
+
+    - picocom
+    - minicom
+    - i2c-tools
+    - spi-tools
+    - gpiod
+
+    - build-essential
+    - cmake
+    - g++
+    - ninja-build
+    - pkg-config
+    - gdb
+    - strace
+    - ltrace
+    - valgrind
+    - clang
+    - clangd
+    - libboost-dev
+    - libboost-system-dev
+    - sqlite3
+    - libsqlite3-dev
+
+    - libmodbus-dev
+    - libserialport-dev
+    - libi2c-dev
+    - libgpiod-dev
+
+    - iproute2
+    - iputils-ping
+    - iw
+    - wireless-regdb
+    - wpasupplicant
+    - snmp
+    - python3
+    - python3-fastapi
+    - python3-jinja2
+    - python3-uvicorn
+    - python3-itsdangerous
