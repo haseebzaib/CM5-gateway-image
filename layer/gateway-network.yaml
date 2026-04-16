@@ -10,7 +10,6 @@ mmdebstrap:
     - |-
       set -eu
       install -d -m 0755 $1/opt/gateway/scripts
-      install -d -m 0755 $1/opt/gateway/software_storage/webpage_network
       install -d -m 0755 $1/opt/gateway/system_related
       install -d -m 0755 $1/opt/gateway/system_related/network
       install -d -m 0755 $1/opt/gateway/system_related/network/config

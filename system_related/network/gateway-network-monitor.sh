@@ -3,7 +3,7 @@ set -euo pipefail
 
 LOG_TAG="gateway-network-monitor"
 BASE_DIR="/opt/gateway"
-STORAGE_DIR="${BASE_DIR}/software_storage/webpage_network"
+STORAGE_DIR="${BASE_DIR}/software_storage/AES"
 SYSTEM_RELATED_DIR="${BASE_DIR}/system_related"
 NETWORK_DIR="${SYSTEM_RELATED_DIR}/network"
 STATE_DIR="${NETWORK_DIR}/state"

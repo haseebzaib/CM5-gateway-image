@@ -10,6 +10,8 @@ mmdebstrap:
     - |-
       set -eu
       install -d -m 0755 $1/opt/gateway
+      install -d -m 0755 $1/opt/gateway/software_storage/AES
+      install -d -m 0755 $1/opt/gateway/software_storage/PES
       install -d -m 0755 $1/opt/gateway/scripts
       install -d -m 0755 $1/opt/gateway/system_related/startup
       install -D -m 0755 $SRCROOT/system_related/startup/gateway-startup.sh $1/opt/gateway/scripts/gateway-startup.sh
