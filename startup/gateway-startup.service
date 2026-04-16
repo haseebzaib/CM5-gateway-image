@@ -1,0 +1,13 @@
+[Unit]
+Description=Zero Axis gateway startup tasks
+After=local-fs.target systemd-tmpfiles-setup.service
+Before=gateway-network-apply.service gateway-network-monitor.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/gateway/scripts/gateway-startup.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

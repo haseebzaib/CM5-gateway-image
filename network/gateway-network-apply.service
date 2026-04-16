@@ -1,0 +1,14 @@
+[Unit]
+Description=Zero Axis gateway network apply service
+Requires=gateway-startup.service
+After=gateway-startup.service network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/gateway/scripts/gateway-network-apply.sh
+ExecReload=/opt/gateway/scripts/gateway-network-apply.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

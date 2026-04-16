@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "network": {
+    "defaults_behavior": {
+      "create_defaults_if_missing": true,
+      "restore_defaults_if_invalid": true,
+      "backup_invalid_file": true
+    },
+    "ethernet": {
+      "enabled": true,
+      "interface": "eth0",
+      "role": "uplink",
+      "dhcp": true,
+      "static_address": "",
+      "static_gateway": "",
+      "static_dns": [],
+      "route_metric": 100,
+      "mtu": 1500,
+      "uplink_allowed": true,
+      "downstream_allowed": false
+    },
+    "wifi_client": {
+      "enabled": false,
+      "interface": "wlan0",
+      "auto_connect": true,
+      "ssid": "",
+      "hidden_ssid": false,
+      "security": "wpa2-psk",
+      "passphrase": "",
+      "country_code": "PK",
+      "band": "auto",
+      "dhcp": true,
+      "static_address": "",
+      "static_gateway": "",
+      "static_dns": [],
+      "route_metric": 200,
+      "uplink_allowed": true
+    },
+    "wifi_ap": {
+      "enabled": false,
+      "interface": "wlan0",
+      "ssid": "Gateway-Setup",
+      "security": "wpa2-psk",
+      "passphrase": "",
+      "country_code": "PK",
+      "band": "2.4ghz",
+      "channel": "auto",
+      "channel_width": "20",
+      "subnet_cidr": "192.168.50.1/24",
+      "dhcp_server_enabled": true,
+      "dhcp_range_start": "192.168.50.100",
+      "dhcp_range_end": "192.168.50.180",
+      "nat_enabled": true,
+      "client_isolation": false,
+      "shared_uplink_mode": "auto"
+    },
+    "cellular": {
+      "active_modem_id": "",
+      "modems": []
+    },
+    "policy": {
+      "uplink_priority": [
+        "eth0",
+        "wifi_client",
+        "cellular"
+      ],
+      "failback_enabled": true,
+      "stable_seconds_before_switch": 5,
+      "require_connectivity_check": true,
+      "fail_count_threshold": 1,
+      "recover_count_threshold": 1,
+      "connectivity_targets": [
+        "1.1.1.1",
+        "8.8.8.8"
+      ]
+    }
+  }
+}

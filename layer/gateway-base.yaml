@@ -66,6 +66,9 @@ mmdebstrap:
     - iw
     - wireless-regdb
     - wpasupplicant
+    - hostapd
+    - dnsmasq
+    - iptables
     - snmp
     - python3
     - python3-fastapi

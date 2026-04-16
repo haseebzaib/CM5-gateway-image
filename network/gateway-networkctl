@@ -1,0 +1,34 @@
+#!/bin/bash
+set -euo pipefail
+
+BASE_DIR="/opt/gateway"
+STATE_FILE="${BASE_DIR}/state/network_state.json"
+RESULT_FILE="${BASE_DIR}/state/network_apply_result.json"
+SCRIPTS_DIR="${BASE_DIR}/scripts"
+
+cmd="${1:-}"
+
+case "${cmd}" in
+  apply)
+    exec systemctl restart gateway-network-apply.service
+    ;;
+  state)
+    exec cat "${STATE_FILE}"
+    ;;
+  result)
+    exec cat "${RESULT_FILE}"
+    ;;
+  scan-wifi)
+    exec "${SCRIPTS_DIR}/gateway-network-scan.sh" "${2:-wlan0}"
+    ;;
+  *)
+    cat <<'EOF'
+Usage:
+  gateway-networkctl apply
+  gateway-networkctl state
+  gateway-networkctl result
+  gateway-networkctl scan-wifi [iface]
+EOF
+    exit 1
+    ;;
+esac

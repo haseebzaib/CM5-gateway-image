@@ -1,0 +1,14 @@
+[Unit]
+Description=Zero Axis gateway network monitor
+Requires=gateway-startup.service gateway-network-apply.service
+After=gateway-startup.service gateway-network-apply.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/gateway/scripts/gateway-network-monitor.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
