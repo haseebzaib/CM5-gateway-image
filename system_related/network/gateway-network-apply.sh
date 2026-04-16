@@ -3,9 +3,11 @@ set -euo pipefail
 
 LOG_TAG="gateway-network-apply"
 BASE_DIR="/opt/gateway"
-CONFIG_DIR="${BASE_DIR}/config"
-STATE_DIR="${BASE_DIR}/state"
-GENERATED_DIR="${BASE_DIR}/generated_network"
+SYSTEM_RELATED_DIR="${BASE_DIR}/system_related"
+NETWORK_DIR="${SYSTEM_RELATED_DIR}/network"
+CONFIG_DIR="${NETWORK_DIR}/config"
+STATE_DIR="${NETWORK_DIR}/state"
+GENERATED_DIR="${NETWORK_DIR}/generated"
 STORAGE_DIR="${BASE_DIR}/software_storage/webpage_network"
 DEFAULT_SETTINGS="${CONFIG_DIR}/default-network-settings.json"
 ACTIVE_SETTINGS="${STORAGE_DIR}/network_settings.json"
@@ -36,7 +38,7 @@ log() {
 }
 
 ensure_layout() {
-  install -d -m 0755 "${BASE_DIR}" "${CONFIG_DIR}" "${STATE_DIR}" "${GENERATED_DIR}" "${STORAGE_DIR}"
+  install -d -m 0755 "${BASE_DIR}" "${SYSTEM_RELATED_DIR}" "${NETWORK_DIR}" "${CONFIG_DIR}" "${STATE_DIR}" "${GENERATED_DIR}" "${STORAGE_DIR}"
   install -d -m 0755 "${GENERATED_DIR}/systemd-networkd" "${GENERATED_DIR}/wpa_supplicant" "${GENERATED_DIR}/hostapd" "${GENERATED_DIR}/dnsmasq"
   install -d -m 0755 "${NETWORKD_DIR}" "${WPA_DIR}" "${HOSTAPD_DIR}" "${DNSMASQ_DIR}"
 }

@@ -9,16 +9,18 @@ mmdebstrap:
   customize-hooks:
     - |-
       set -eu
-      install -d -m 0755 $1/opt/gateway/config
-      install -d -m 0755 $1/opt/gateway/generated_network
       install -d -m 0755 $1/opt/gateway/scripts
       install -d -m 0755 $1/opt/gateway/software_storage/webpage_network
-      install -d -m 0755 $1/opt/gateway/state
-      install -D -m 0644 $SRCROOT/network/default-network-settings.json $1/opt/gateway/config/default-network-settings.json
-      install -D -m 0755 $SRCROOT/network/gateway-network-apply.sh $1/opt/gateway/scripts/gateway-network-apply.sh
-      install -D -m 0755 $SRCROOT/network/gateway-network-monitor.sh $1/opt/gateway/scripts/gateway-network-monitor.sh
-      install -D -m 0755 $SRCROOT/network/gateway-network-scan.sh $1/opt/gateway/scripts/gateway-network-scan.sh
-      install -D -m 0755 $SRCROOT/network/gateway-networkctl $1/opt/gateway/scripts/gateway-networkctl
-      install -D -m 0644 $SRCROOT/network/gateway-network-apply.service $1/etc/systemd/system/gateway-network-apply.service
-      install -D -m 0644 $SRCROOT/network/gateway-network-monitor.service $1/etc/systemd/system/gateway-network-monitor.service
+      install -d -m 0755 $1/opt/gateway/system_related
+      install -d -m 0755 $1/opt/gateway/system_related/network
+      install -d -m 0755 $1/opt/gateway/system_related/network/config
+      install -d -m 0755 $1/opt/gateway/system_related/network/generated
+      install -d -m 0755 $1/opt/gateway/system_related/network/state
+      install -D -m 0644 $SRCROOT/system_related/network/default-network-settings.json $1/opt/gateway/system_related/network/config/default-network-settings.json
+      install -D -m 0755 $SRCROOT/system_related/network/gateway-network-apply.sh $1/opt/gateway/scripts/gateway-network-apply.sh
+      install -D -m 0755 $SRCROOT/system_related/network/gateway-network-monitor.sh $1/opt/gateway/scripts/gateway-network-monitor.sh
+      install -D -m 0755 $SRCROOT/system_related/network/gateway-network-scan.sh $1/opt/gateway/scripts/gateway-network-scan.sh
+      install -D -m 0755 $SRCROOT/system_related/network/gateway-networkctl $1/opt/gateway/scripts/gateway-networkctl
+      install -D -m 0644 $SRCROOT/system_related/network/gateway-network-apply.service $1/etc/systemd/system/gateway-network-apply.service
+      install -D -m 0644 $SRCROOT/system_related/network/gateway-network-monitor.service $1/etc/systemd/system/gateway-network-monitor.service
     - $BDEBSTRAP_HOOKS/enable-units "$1" gateway-network-apply gateway-network-monitor

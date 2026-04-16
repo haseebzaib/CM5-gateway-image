@@ -3,13 +3,15 @@ set -euo pipefail
 
 LOG_TAG="gateway-startup"
 BASE_DIR="/opt/gateway"
-STATE_DIR="${BASE_DIR}/state"
 SCRIPTS_DIR="${BASE_DIR}/scripts"
-CONFIG_DIR="${BASE_DIR}/config"
-GENERATED_DIR="${BASE_DIR}/generated_network"
 STORAGE_DIR="${BASE_DIR}/software_storage"
 WEBPAGE_NETWORK_DIR="${STORAGE_DIR}/webpage_network"
-DEFAULT_SETTINGS="${CONFIG_DIR}/default-network-settings.json"
+SYSTEM_RELATED_DIR="${BASE_DIR}/system_related"
+NETWORK_DIR="${SYSTEM_RELATED_DIR}/network"
+NETWORK_CONFIG_DIR="${NETWORK_DIR}/config"
+NETWORK_STATE_DIR="${NETWORK_DIR}/state"
+NETWORK_GENERATED_DIR="${NETWORK_DIR}/generated"
+DEFAULT_SETTINGS="${NETWORK_CONFIG_DIR}/default-network-settings.json"
 ACTIVE_SETTINGS="${WEBPAGE_NETWORK_DIR}/network_settings.json"
 
 log() {
@@ -19,11 +21,13 @@ log() {
 
 install -d -m 0755 "${BASE_DIR}"
 install -d -m 0755 "${SCRIPTS_DIR}"
-install -d -m 0755 "${CONFIG_DIR}"
-install -d -m 0755 "${STATE_DIR}"
-install -d -m 0755 "${GENERATED_DIR}"
 install -d -m 0755 "${STORAGE_DIR}"
 install -d -m 0755 "${WEBPAGE_NETWORK_DIR}"
+install -d -m 0755 "${SYSTEM_RELATED_DIR}"
+install -d -m 0755 "${NETWORK_DIR}"
+install -d -m 0755 "${NETWORK_CONFIG_DIR}"
+install -d -m 0755 "${NETWORK_STATE_DIR}"
+install -d -m 0755 "${NETWORK_GENERATED_DIR}"
 
 log "startup script begin"
 
@@ -36,7 +40,7 @@ if command -v ip >/dev/null 2>&1; then
   ip link show eth0 >/dev/null 2>&1 || true
 fi
 
-date --iso-8601=seconds > "${STATE_DIR}/last-boot.txt"
-touch "${STATE_DIR}/startup-ran"
+date --iso-8601=seconds > "${NETWORK_STATE_DIR}/last-boot.txt"
+touch "${NETWORK_STATE_DIR}/startup-ran"
 
 log "startup script end"

@@ -11,6 +11,7 @@ mmdebstrap:
       set -eu
       install -d -m 0755 $1/opt/gateway
       install -d -m 0755 $1/opt/gateway/scripts
-      install -D -m 0755 $SRCROOT/startup/gateway-startup.sh $1/opt/gateway/scripts/gateway-startup.sh
-      install -D -m 0644 $SRCROOT/startup/gateway-startup.service $1/etc/systemd/system/gateway-startup.service
+      install -d -m 0755 $1/opt/gateway/system_related/startup
+      install -D -m 0755 $SRCROOT/system_related/startup/gateway-startup.sh $1/opt/gateway/scripts/gateway-startup.sh
+      install -D -m 0644 $SRCROOT/system_related/startup/gateway-startup.service $1/etc/systemd/system/gateway-startup.service
     - $BDEBSTRAP_HOOKS/enable-units "$1" gateway-startup

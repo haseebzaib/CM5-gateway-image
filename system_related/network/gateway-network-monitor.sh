@@ -4,7 +4,9 @@ set -euo pipefail
 LOG_TAG="gateway-network-monitor"
 BASE_DIR="/opt/gateway"
 STORAGE_DIR="${BASE_DIR}/software_storage/webpage_network"
-STATE_DIR="${BASE_DIR}/state"
+SYSTEM_RELATED_DIR="${BASE_DIR}/system_related"
+NETWORK_DIR="${SYSTEM_RELATED_DIR}/network"
+STATE_DIR="${NETWORK_DIR}/state"
 ACTIVE_SETTINGS="${STORAGE_DIR}/network_settings.json"
 STATE_FILE="${STATE_DIR}/network_state.json"
 RESULT_FILE="${STATE_DIR}/network_apply_result.json"
@@ -32,7 +34,7 @@ write_json_file() {
 }
 
 ensure_runtime_files() {
-  install -d -m 0755 "${STATE_DIR}" "${STORAGE_DIR}"
+  install -d -m 0755 "${SYSTEM_RELATED_DIR}" "${NETWORK_DIR}" "${STATE_DIR}" "${STORAGE_DIR}"
   if [ ! -f "${MONITOR_STATE_FILE}" ]; then
     write_json_file "${MONITOR_STATE_FILE}" <<'EOF'
 {
