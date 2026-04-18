@@ -75,3 +75,8 @@ mmdebstrap:
     - python3-jinja2
     - python3-uvicorn
     - python3-itsdangerous
+  customize-hooks:
+    - |-
+      set -eu
+      install -d -m 0755 $1/etc/sudoers.d
+      install -D -m 0440 $SRCROOT/system_related/sudoers/gateway-network $1/etc/sudoers.d/gateway-network

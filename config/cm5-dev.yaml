@@ -1,13 +1,15 @@
 device:
-  layer: rpi4
-  hostname: gateway-pi4-dev
+  layer: rpi-cm5
+  variant: 32G
+  storage_type: emmc
+  hostname: metacrust
   user1: gateway
   user1passhash: "$6$S65R/7doKrTNn5QH$yIyxA8w37IHiSXwKyVtLnIvJ/7MrUIi21.UyPkPe7yHnLu.Kgw7LvfdJm4QQkByDKcjreki4KScMJCi0Vaz4c."
   user1sudo: nopasswd
 
 image:
   layer: image-rpios
-  name: gateway-trixie-pi4-headless
+  name: gateway-trixie-cm5-headless
   boot_part_size: 200%
   root_part_size: 300%
 

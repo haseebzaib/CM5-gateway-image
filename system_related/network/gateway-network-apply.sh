@@ -277,6 +277,7 @@ install_networkd_files() {
   [ -f "${GENERATED_DIR}/systemd-networkd/10-gateway-eth0.network" ] && install -D -m 0644 "${GENERATED_DIR}/systemd-networkd/10-gateway-eth0.network" "${NETWORKD_DIR}/10-gateway-eth0.network"
   [ -f "${GENERATED_DIR}/systemd-networkd/20-gateway-wlan0.network" ] && install -D -m 0644 "${GENERATED_DIR}/systemd-networkd/20-gateway-wlan0.network" "${NETWORKD_DIR}/20-gateway-wlan0.network"
   [ -f "${GENERATED_DIR}/systemd-networkd/21-gateway-wlan0-ap.network" ] && install -D -m 0644 "${GENERATED_DIR}/systemd-networkd/21-gateway-wlan0-ap.network" "${NETWORKD_DIR}/21-gateway-wlan0-ap.network"
+  return 0
 }
 
 generate_ethernet_network() {
@@ -465,6 +466,15 @@ clear_wifi_runtime() {
   systemctl disable --now wpa_supplicant@wlan0.service >/dev/null 2>&1 || true
 }
 
+disable_interface_runtime() {
+  local iface="$1"
+
+  ip -4 route flush dev "${iface}" >/dev/null 2>&1 || true
+  ip -6 route flush dev "${iface}" >/dev/null 2>&1 || true
+  ip addr flush dev "${iface}" >/dev/null 2>&1 || true
+  ip link set dev "${iface}" down >/dev/null 2>&1 || true
+}
+
 clear_nat_rules() {
   iptables -D FORWARD -j GATEWAY_FORWARD >/dev/null 2>&1 || true
   iptables -F GATEWAY_FORWARD >/dev/null 2>&1 || true
@@ -515,7 +525,9 @@ configure_nat() {
 
 configure_services() {
   local wifi_client_enabled wifi_ap_enabled ap_dhcp_enabled
+  local ethernet_enabled
 
+  ethernet_enabled="$(jq -r '.network.ethernet.enabled' "${ACTIVE_SETTINGS}")"
   wifi_client_enabled="$(jq -r '.network.wifi_client.enabled' "${ACTIVE_SETTINGS}")"
   wifi_ap_enabled="$(jq -r '.network.wifi_ap.enabled' "${ACTIVE_SETTINGS}")"
   ap_dhcp_enabled="$(jq -r '.network.wifi_ap.dhcp_server_enabled' "${ACTIVE_SETTINGS}")"
@@ -524,6 +536,16 @@ configure_services() {
   install_networkd_files
   systemctl restart systemd-networkd
   systemctl restart systemd-resolved || true
+
+  if [ "${ethernet_enabled}" != "true" ]; then
+    disable_interface_runtime "eth0"
+  fi
+
+  if [ "${wifi_client_enabled}" != "true" ] && [ "${wifi_ap_enabled}" != "true" ]; then
+    disable_interface_runtime "wlan0"
+  else
+    ip link set dev wlan0 up >/dev/null 2>&1 || true
+  fi
 
   if [ "${wifi_client_enabled}" = "true" ]; then
     install -D -m 0600 "${GENERATED_DIR}/wpa_supplicant/wpa_supplicant-wlan0.conf" "${WPA_FILE}"

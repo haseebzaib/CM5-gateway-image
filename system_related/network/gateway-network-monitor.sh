@@ -14,7 +14,7 @@ MONITOR_STATE_FILE="${STATE_DIR}/network_monitor_state.json"
 NETWORKCTL="${BASE_DIR}/scripts/gateway-networkctl"
 
 MONITOR_INTERVAL=5
-LAST_HASH=""
+SUMMARY_INTERVAL=60
 
 log() {
   logger -t "${LOG_TAG}" "$*"
@@ -241,17 +241,21 @@ apply_route_preference() {
 set_iface_metric() {
   local iface="$1"
   local new_metric="$2"
-  local route gateway
+  local routes gateway
 
-  route="$(ip -4 route show default dev "${iface}" | head -n1 || true)"
-  [ -n "${route}" ] || return 0
+  routes="$(ip -4 route show default dev "${iface}" || true)"
+  [ -n "${routes}" ] || return 0
 
-  gateway="$(printf '%s\n' "${route}" | awk '{for (i=1; i<=NF; i++) if ($i=="via") {print $(i+1); exit}}')"
+  gateway="$(printf '%s\n' "${routes}" | awk '{for (i=1; i<=NF; i++) if ($i=="via") {print $(i+1); exit}}')"
+
+  while ip -4 route del default dev "${iface}" >/dev/null 2>&1; do
+    :
+  done
 
   if [ -n "${gateway}" ]; then
-    ip -4 route replace default via "${gateway}" dev "${iface}" metric "${new_metric}" >/dev/null 2>&1 || true
+    ip -4 route add default via "${gateway}" dev "${iface}" metric "${new_metric}" >/dev/null 2>&1 || true
   else
-    ip -4 route replace default dev "${iface}" metric "${new_metric}" >/dev/null 2>&1 || true
+    ip -4 route add default dev "${iface}" metric "${new_metric}" >/dev/null 2>&1 || true
   fi
 }
 
@@ -293,8 +297,8 @@ write_state_snapshot() {
 {
   "active_uplink": "${active}",
   "monitor_status": "${monitor_status}",
-  "last_apply_status": $(printf '%s' "${current_apply_result}" | jq -r '.status // "unknown"' | jq -Rsa .),
-  "last_apply_timestamp": $(printf '%s' "${current_apply_result}" | jq -r '.timestamp // ""' | jq -Rsa .),
+  "last_apply_status": $(json_escape "$(printf '%s' "${current_apply_result}" | jq -r '.status // "unknown"')"),
+  "last_apply_timestamp": $(json_escape "$(printf '%s' "${current_apply_result}" | jq -r '.timestamp // ""')"),
   "last_monitor_timestamp": "$(date --iso-8601=seconds)",
   "ethernet": {
     "interface": "eth0",
@@ -332,7 +336,9 @@ main_loop() {
   local candidate candidate_since
   local eth_ready_count eth_fail_count eth_eligible eth_last_ready eth_internet
   local wifi_ready_count wifi_fail_count wifi_eligible wifi_last_ready wifi_internet
+  local previous_pending previous_candidate last_summary_epoch
 
+  last_summary_epoch=0
   while true; do
     ensure_runtime_files
 
@@ -343,8 +349,12 @@ main_loop() {
     fi
 
     current_hash="$(sha256sum "${ACTIVE_SETTINGS}" | awk '{print $1}')"
+    LAST_HASH="$(monitor_value '.last_config_hash // ""')"
     if [ "${current_hash}" != "${LAST_HASH}" ]; then
-      "${NETWORKCTL}" apply >/dev/null 2>&1 || true
+      if [ -n "${LAST_HASH}" ]; then
+        log "settings changed, triggering network apply"
+        "${NETWORKCTL}" apply >/dev/null 2>&1 || true
+      fi
       LAST_HASH="${current_hash}"
     fi
 
@@ -364,6 +374,7 @@ main_loop() {
     previous_active="$(monitor_value '.active_uplink // "none"')"
     active="${previous_active}"
     pending="$(monitor_value '.pending_candidate // ""')"
+    previous_pending="${pending}"
     pending_since="$(monitor_value '.pending_since_epoch // 0')"
     last_switch_timestamp="$(monitor_value '.last_switch_timestamp // ""')"
     now="$(date +%s)"
@@ -388,10 +399,16 @@ main_loop() {
 
     case "${active}" in
       eth0)
-        [ "${eth_fail_count}" -ge "${fail_threshold}" ] && active="none"
+        if [ "${eth_fail_count}" -ge "${fail_threshold}" ]; then
+          log "eth0 lost eligibility after ${eth_fail_count} failed checks"
+          active="none"
+        fi
         ;;
       wifi_client)
-        [ "${wifi_fail_count}" -ge "${fail_threshold}" ] && active="none"
+        if [ "${wifi_fail_count}" -ge "${fail_threshold}" ]; then
+          log "wifi_client lost eligibility after ${wifi_fail_count} failed checks"
+          active="none"
+        fi
         ;;
     esac
 
@@ -402,6 +419,7 @@ main_loop() {
       if [ "${pending}" != "${candidate}" ]; then
         pending="${candidate}"
         pending_since="${now}"
+        log "pending uplink candidate ${candidate}"
       fi
       candidate_since=$((now - pending_since))
       if [ "${candidate_since}" -ge "${stable_seconds}" ]; then
@@ -420,6 +438,7 @@ main_loop() {
         if [ "${pending}" != "${candidate}" ]; then
           pending="${candidate}"
           pending_since="${now}"
+          log "pending uplink switch to ${candidate}"
         fi
         candidate_since=$((now - pending_since))
         if [ "${candidate_since}" -ge "${stable_seconds}" ]; then
@@ -435,6 +454,15 @@ main_loop() {
     if [ "${active}" != "${previous_active}" ]; then
       last_switch_timestamp="$(date --iso-8601=seconds)"
       log "active uplink switched to ${active}"
+    fi
+
+    if [ "${candidate}" = "none" ] && [ "${previous_pending}" != "" ]; then
+      log "cleared pending uplink candidate"
+    fi
+
+    if [ $((now - last_summary_epoch)) -ge "${SUMMARY_INTERVAL}" ]; then
+      log "summary active=${active} eth0(eligible=${eth_eligible},internet=${eth_internet},fail=${eth_fail_count}) wifi_client(eligible=${wifi_eligible},internet=${wifi_internet},fail=${wifi_fail_count})"
+      last_summary_epoch="${now}"
     fi
 
     write_monitor_state \
