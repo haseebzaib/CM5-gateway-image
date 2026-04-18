@@ -1,7 +1,7 @@
 [Unit]
 Description=Zero Axis CM5 boot chirp
-After=gateway-startup.service gateway-network-apply.service gateway-network-monitor.service
-Requires=gateway-startup.service gateway-network-apply.service
+After=local-fs.target gateway-startup.service
+Wants=gateway-startup.service
 
 [Service]
 Type=oneshot

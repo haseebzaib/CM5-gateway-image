@@ -1,0 +1,15 @@
+# METABEGIN
+# X-Env-Layer-Name: gateway-aes
+# X-Env-Layer-Category: gateway
+# X-Env-Layer-Desc: Zero Axis Gateway Analytics Engine web service
+# X-Env-Layer-Requires: gateway-base,gateway-startup,gateway-network
+# METAEND
+---
+mmdebstrap:
+  customize-hooks:
+    - |-
+      set -eu
+      install -d -m 0755 $1/opt/gateway/software/aes
+      cp -r $SRCROOT/../../gateway_softwares/analytics_engine_software_aes/AES/. $1/opt/gateway/software/aes/
+      install -D -m 0644 $SRCROOT/system_related/aes/gateway-aes.service $1/etc/systemd/system/gateway-aes.service
+    - $BDEBSTRAP_HOOKS/enable-units "$1" gateway-aes

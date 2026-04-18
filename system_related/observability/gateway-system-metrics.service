@@ -1,0 +1,13 @@
+[Unit]
+Description=Zero Axis gateway system metrics collector
+After=local-fs.target gateway-startup.service
+Wants=gateway-startup.service
+
+[Service]
+Type=simple
+ExecStart=/opt/gateway/scripts/gateway-system-metrics.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

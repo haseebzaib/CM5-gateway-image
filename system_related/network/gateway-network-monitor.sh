@@ -11,10 +11,12 @@ ACTIVE_SETTINGS="${STORAGE_DIR}/network_settings.json"
 STATE_FILE="${STATE_DIR}/network_state.json"
 RESULT_FILE="${STATE_DIR}/network_apply_result.json"
 MONITOR_STATE_FILE="${STATE_DIR}/network_monitor_state.json"
+RECOVERY_STATE_FILE="${STATE_DIR}/network_recovery_state.json"
 NETWORKCTL="${BASE_DIR}/scripts/gateway-networkctl"
 
 MONITOR_INTERVAL=5
 SUMMARY_INTERVAL=60
+RECOVERY_COOLDOWN=30
 
 log() {
   logger -t "${LOG_TAG}" "$*"
@@ -59,6 +61,16 @@ ensure_runtime_files() {
       "internet_ok": false
     }
   }
+}
+EOF
+  fi
+  if [ ! -f "${RECOVERY_STATE_FILE}" ]; then
+    write_json_file "${RECOVERY_STATE_FILE}" <<'EOF'
+{
+  "last_recovery_timestamp": "",
+  "last_recovery_epoch": 0,
+  "recovery_count": 0,
+  "last_recovery_reason": ""
 }
 EOF
   fi
@@ -132,6 +144,37 @@ effective_ready() {
 monitor_value() {
   local expr="$1"
   jq -r "${expr}" "${MONITOR_STATE_FILE}"
+}
+
+recovery_value() {
+  local expr="$1"
+  jq -r "${expr}" "${RECOVERY_STATE_FILE}"
+}
+
+write_recovery_state() {
+  local epoch="$1"
+  local count="$2"
+  local reason="$3"
+
+  write_json_file "${RECOVERY_STATE_FILE}" <<EOF
+{
+  "last_recovery_timestamp": "$(date --iso-8601=seconds)",
+  "last_recovery_epoch": ${epoch},
+  "recovery_count": ${count},
+  "last_recovery_reason": $(json_escape "${reason}")
+}
+EOF
+}
+
+reset_recovery_state() {
+  write_json_file "${RECOVERY_STATE_FILE}" <<'EOF'
+{
+  "last_recovery_timestamp": "",
+  "last_recovery_epoch": 0,
+  "recovery_count": 0,
+  "last_recovery_reason": ""
+}
+EOF
 }
 
 write_monitor_state() {
@@ -264,11 +307,15 @@ write_state_snapshot() {
   local monitor_status="$2"
   local require_check="$3"
   local current_apply_result
+  local recovery_count recovery_reason recovery_timestamp
   local eth_link eth_up eth_addr eth_internet
   local wifi_present wifi_up wifi_link wifi_addr wifi_internet wifi_ssid ap_clients
 
   current_apply_result='{}'
   [ -f "${RESULT_FILE}" ] && current_apply_result="$(cat "${RESULT_FILE}")"
+  recovery_count="$(recovery_value '.recovery_count // 0')"
+  recovery_reason="$(recovery_value '.last_recovery_reason // ""')"
+  recovery_timestamp="$(recovery_value '.last_recovery_timestamp // ""')"
 
   eth_link="$(interface_link "eth0")"
   eth_up="$(interface_up "eth0")"
@@ -300,6 +347,11 @@ write_state_snapshot() {
   "last_apply_status": $(json_escape "$(printf '%s' "${current_apply_result}" | jq -r '.status // "unknown"')"),
   "last_apply_timestamp": $(json_escape "$(printf '%s' "${current_apply_result}" | jq -r '.timestamp // ""')"),
   "last_monitor_timestamp": "$(date --iso-8601=seconds)",
+  "recovery": {
+    "count": ${recovery_count},
+    "last_reason": $(json_escape "${recovery_reason}"),
+    "last_timestamp": $(json_escape "${recovery_timestamp}")
+  },
   "ethernet": {
     "interface": "eth0",
     "enabled": $(jq -r '.network.ethernet.enabled' "${ACTIVE_SETTINGS}"),
@@ -328,6 +380,28 @@ write_state_snapshot() {
 EOF
 }
 
+service_active() {
+  systemctl is-active --quiet "$1"
+}
+
+attempt_runtime_recovery() {
+  local reason="$1"
+  local now="$2"
+  local last_epoch recovery_count
+
+  last_epoch="$(recovery_value '.last_recovery_epoch // 0')"
+  recovery_count="$(recovery_value '.recovery_count // 0')"
+
+  if [ $((now - last_epoch)) -lt "${RECOVERY_COOLDOWN}" ]; then
+    return 0
+  fi
+
+  recovery_count=$((recovery_count + 1))
+  log "runtime recovery triggered: ${reason}"
+  "${NETWORKCTL}" apply >/dev/null 2>&1 || true
+  write_recovery_state "${now}" "${recovery_count}" "${reason}"
+}
+
 main_loop() {
   local current_hash require_check stable_seconds failback_enabled
   local fail_threshold recover_threshold
@@ -337,6 +411,7 @@ main_loop() {
   local eth_ready_count eth_fail_count eth_eligible eth_last_ready eth_internet
   local wifi_ready_count wifi_fail_count wifi_eligible wifi_last_ready wifi_internet
   local previous_pending previous_candidate last_summary_epoch
+  local recovery_reason
 
   last_summary_epoch=0
   while true; do
@@ -458,6 +533,21 @@ main_loop() {
 
     if [ "${candidate}" = "none" ] && [ "${previous_pending}" != "" ]; then
       log "cleared pending uplink candidate"
+    fi
+
+    recovery_reason=""
+    if [ "${active}" = "none" ]; then
+      if [ "${wifi_enabled}" = "true" ] && ! service_active "wpa_supplicant@wlan0.service"; then
+        recovery_reason="wifi enabled but wpa_supplicant@wlan0 is inactive"
+      elif [ "${ethernet_enabled}" = "true" ] || [ "${wifi_enabled}" = "true" ]; then
+        recovery_reason="no eligible active uplink"
+      fi
+    fi
+
+    if [ -n "${recovery_reason}" ]; then
+      attempt_runtime_recovery "${recovery_reason}" "${now}"
+    elif [ "$(recovery_value '.recovery_count // 0')" != "0" ]; then
+      reset_recovery_state
     fi
 
     if [ $((now - last_summary_epoch)) -ge "${SUMMARY_INTERVAL}" ]; then

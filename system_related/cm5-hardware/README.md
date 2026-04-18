@@ -51,7 +51,8 @@ Examples:
 
 Boot chirp:
 
-- `gateway-cm5-boot-chirp.service` runs once after the main gateway startup/network units
+- `gateway-cm5-boot-chirp.service` runs once after local boot and gateway startup
+- it is intentionally independent of gateway network success, so you still get an audible boot sign if Ethernet or Wi-Fi bring-up is broken
 - current pattern is 3 short chirps
 
 Verification:

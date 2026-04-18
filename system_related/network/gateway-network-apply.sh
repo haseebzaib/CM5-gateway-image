@@ -475,6 +475,31 @@ disable_interface_runtime() {
   ip link set dev "${iface}" down >/dev/null 2>&1 || true
 }
 
+wait_for_wifi_client_ready() {
+  local timeout_seconds="$1"
+  local deadline remaining ssid address
+
+  deadline=$(( $(date +%s) + timeout_seconds ))
+  while [ "$(date +%s)" -lt "${deadline}" ]; do
+    ssid="$(iw dev wlan0 link 2>/dev/null | awk -F': ' '/SSID:/ {print $2; exit}')"
+    address="$(ip -4 -o addr show dev wlan0 2>/dev/null | awk '{print $4}' | head -n1)"
+
+    if [ -n "${ssid}" ] && [ -n "${address}" ]; then
+      log "wifi client ready on SSID ${ssid} with address ${address}"
+      return 0
+    fi
+
+    sleep 1
+  done
+
+  remaining="$(iw dev wlan0 link 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
+  [ -n "${remaining}" ] || remaining="no association details available"
+  CURRENT_SCOPE="wifi_client"
+  CURRENT_CODE="wifi_client_boot_timeout"
+  CURRENT_MESSAGE="Wi-Fi client did not become ready before timeout. ${remaining}"
+  return 1
+}
+
 clear_nat_rules() {
   iptables -D FORWARD -j GATEWAY_FORWARD >/dev/null 2>&1 || true
   iptables -F GATEWAY_FORWARD >/dev/null 2>&1 || true
@@ -526,11 +551,13 @@ configure_nat() {
 configure_services() {
   local wifi_client_enabled wifi_ap_enabled ap_dhcp_enabled
   local ethernet_enabled
+  local wifi_dhcp
 
   ethernet_enabled="$(jq -r '.network.ethernet.enabled' "${ACTIVE_SETTINGS}")"
   wifi_client_enabled="$(jq -r '.network.wifi_client.enabled' "${ACTIVE_SETTINGS}")"
   wifi_ap_enabled="$(jq -r '.network.wifi_ap.enabled' "${ACTIVE_SETTINGS}")"
   ap_dhcp_enabled="$(jq -r '.network.wifi_ap.dhcp_server_enabled' "${ACTIVE_SETTINGS}")"
+  wifi_dhcp="$(jq -r '.network.wifi_client.dhcp' "${ACTIVE_SETTINGS}")"
 
   clear_wifi_runtime
   install_networkd_files
@@ -550,6 +577,13 @@ configure_services() {
   if [ "${wifi_client_enabled}" = "true" ]; then
     install -D -m 0600 "${GENERATED_DIR}/wpa_supplicant/wpa_supplicant-wlan0.conf" "${WPA_FILE}"
     systemctl enable --now wpa_supplicant@wlan0.service >/dev/null
+
+    if [ "${ethernet_enabled}" != "true" ]; then
+      log "ethernet disabled, waiting for wifi client readiness"
+      wait_for_wifi_client_ready 45
+    elif [ "${wifi_dhcp}" != "true" ]; then
+      log "wifi client static mode configured, skipping boot wait because no DHCP lease is needed"
+    fi
   fi
 
   if [ "${wifi_ap_enabled}" = "true" ]; then

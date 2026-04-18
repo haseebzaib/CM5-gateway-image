@@ -1,0 +1,17 @@
+# METABEGIN
+# X-Env-Layer-Name: gateway-observability
+# X-Env-Layer-Category: gateway
+# X-Env-Layer-Desc: Zero Axis gateway system metrics collection service
+# X-Env-Layer-Requires: gateway-base,gateway-startup
+# METAEND
+---
+mmdebstrap:
+  customize-hooks:
+    - |-
+      set -eu
+      install -d -m 0755 $1/opt/gateway/scripts
+      install -d -m 0755 $1/opt/gateway/system_related/observability
+      install -d -m 0755 $1/opt/gateway/system_related/observability/state
+      install -D -m 0755 $SRCROOT/system_related/observability/gateway-system-metrics.py $1/opt/gateway/scripts/gateway-system-metrics.py
+      install -D -m 0644 $SRCROOT/system_related/observability/gateway-system-metrics.service $1/etc/systemd/system/gateway-system-metrics.service
+    - $BDEBSTRAP_HOOKS/enable-units "$1" gateway-system-metrics
