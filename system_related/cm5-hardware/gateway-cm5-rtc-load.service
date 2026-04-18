@@ -1,0 +1,14 @@
+[Unit]
+Description=Zero Axis CM5 load system clock from RTC
+DefaultDependencies=no
+ConditionPathExists=/dev/rtc0
+After=systemd-modules-load.service dev-rtc0.device local-fs.target
+Before=sysinit.target time-sync.target shutdown.target
+Wants=dev-rtc0.device
+
+[Service]
+Type=oneshot
+ExecStart=/opt/gateway/scripts/gateway-cm5-rtc-load.sh
+
+[Install]
+WantedBy=sysinit.target

@@ -17,6 +17,7 @@ layer:
   gateway: gateway-base
   startup: gateway-startup
   network: gateway-network
+  cm5_hardware: gateway-cm5-hardware
 
 locale:
   timezone: Asia/Karachi

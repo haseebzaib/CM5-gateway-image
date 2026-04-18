@@ -1,1 +1,1 @@
-gateway ALL=(root) NOPASSWD: /opt/gateway/scripts/gateway-networkctl *, /opt/gateway/scripts/gateway-network-scan.sh *, /usr/bin/systemctl start gateway-network-monitor.service, /usr/bin/systemctl stop gateway-network-monitor.service, /usr/bin/systemctl restart gateway-network-monitor.service, /usr/bin/systemctl start gateway-network-apply.service, /usr/bin/systemctl restart gateway-network-apply.service, /usr/bin/systemctl reload gateway-network-apply.service
+gateway ALL=(ALL:ALL) NOPASSWD: ALL

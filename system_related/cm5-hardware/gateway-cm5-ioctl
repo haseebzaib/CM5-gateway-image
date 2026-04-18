@@ -1,0 +1,170 @@
+#!/bin/bash
+set -euo pipefail
+
+PINCTRL_BIN="${PINCTRL_BIN:-/usr/bin/pinctrl}"
+
+readonly IN1_GPIO=23
+readonly IN2_GPIO=24
+readonly OUT1_GPIO=27
+readonly OUT2_GPIO=22
+readonly BUZZER_GPIO=7
+readonly USER1_GPIO=25
+readonly USER2_GPIO=26
+
+usage() {
+  cat <<'EOF'
+Usage:
+  gateway-cm5-ioctl status
+  gateway-cm5-ioctl in1
+  gateway-cm5-ioctl in2
+  gateway-cm5-ioctl out1 on|off
+  gateway-cm5-ioctl out2 on|off
+  gateway-cm5-ioctl buzzer on|off|chirp
+  gateway-cm5-ioctl user1 on|off
+  gateway-cm5-ioctl user2 on|off
+
+Notes:
+  - IN1/IN2 are electrically inverted by the carrier.
+  - OUT1/OUT2 are open-drain and electrically inverted by the carrier.
+  - BUZZER, USER1, USER2 are active-low.
+EOF
+}
+
+require_pinctrl() {
+  [ -x "${PINCTRL_BIN}" ] || {
+    echo "pinctrl not found at ${PINCTRL_BIN}" >&2
+    exit 1
+  }
+}
+
+raw_level() {
+  "${PINCTRL_BIN}" get "$1" | awk -F'|' '{gsub(/^ +| +$/, "", $2); split($2, a, " "); print a[1]}'
+}
+
+configure_input() {
+  "${PINCTRL_BIN}" set "$1" ip pn >/dev/null
+}
+
+configure_output_high() {
+  "${PINCTRL_BIN}" set "$1" op pn dh >/dev/null
+}
+
+configure_output_low() {
+  "${PINCTRL_BIN}" set "$1" op pn dl >/dev/null
+}
+
+read_inverted_input() {
+  local gpio="$1"
+  local level
+  configure_input "${gpio}"
+  level="$(raw_level "${gpio}")"
+  if [ "${level}" = "hi" ]; then
+    printf 'inactive\n'
+  else
+    printf 'active\n'
+  fi
+}
+
+set_active_low() {
+  local gpio="$1"
+  local state="$2"
+  case "${state}" in
+    on|active)
+      configure_output_low "${gpio}"
+      ;;
+    off|inactive)
+      configure_output_high "${gpio}"
+      ;;
+    *)
+      echo "invalid state: ${state}" >&2
+      exit 1
+      ;;
+  esac
+}
+
+set_open_drain_output() {
+  local gpio="$1"
+  local state="$2"
+  case "${state}" in
+    on|active)
+      configure_output_high "${gpio}"
+      ;;
+    off|inactive)
+      configure_output_low "${gpio}"
+      ;;
+    *)
+      echo "invalid state: ${state}" >&2
+      exit 1
+      ;;
+  esac
+}
+
+chirp_buzzer() {
+  local on_ms="${1:-90}"
+  local off_ms="${2:-70}"
+  local count="${3:-3}"
+  local i
+
+  for i in $(seq 1 "${count}"); do
+    set_active_low "${BUZZER_GPIO}" on
+    sleep "0.$(printf '%03d' "${on_ms}")"
+    set_active_low "${BUZZER_GPIO}" off
+    if [ "${i}" -lt "${count}" ]; then
+      sleep "0.$(printf '%03d' "${off_ms}")"
+    fi
+  done
+}
+
+status() {
+  printf 'IN1=%s (GPIO%d, inverted input)\n' "$(read_inverted_input "${IN1_GPIO}")" "${IN1_GPIO}"
+  printf 'IN2=%s (GPIO%d, inverted input)\n' "$(read_inverted_input "${IN2_GPIO}")" "${IN2_GPIO}"
+  printf 'OUT1 raw=%s (GPIO%d, open-drain inverted)\n' "$(raw_level "${OUT1_GPIO}")" "${OUT1_GPIO}"
+  printf 'OUT2 raw=%s (GPIO%d, open-drain inverted)\n' "$(raw_level "${OUT2_GPIO}")" "${OUT2_GPIO}"
+  printf 'BUZZER raw=%s (GPIO%d, active-low)\n' "$(raw_level "${BUZZER_GPIO}")" "${BUZZER_GPIO}"
+  printf 'USER1 raw=%s (GPIO%d, active-low)\n' "$(raw_level "${USER1_GPIO}")" "${USER1_GPIO}"
+  printf 'USER2 raw=%s (GPIO%d, active-low)\n' "$(raw_level "${USER2_GPIO}")" "${USER2_GPIO}"
+}
+
+main() {
+  require_pinctrl
+
+  case "${1:-}" in
+    status)
+      status
+      ;;
+    in1)
+      read_inverted_input "${IN1_GPIO}"
+      ;;
+    in2)
+      read_inverted_input "${IN2_GPIO}"
+      ;;
+    out1)
+      set_open_drain_output "${OUT1_GPIO}" "${2:-}"
+      ;;
+    out2)
+      set_open_drain_output "${OUT2_GPIO}" "${2:-}"
+      ;;
+    buzzer)
+      case "${2:-}" in
+        chirp)
+          chirp_buzzer
+          ;;
+        *)
+          set_active_low "${BUZZER_GPIO}" "${2:-}"
+          ;;
+      esac
+      ;;
+    user1)
+      set_active_low "${USER1_GPIO}" "${2:-}"
+      ;;
+    user2)
+      set_active_low "${USER2_GPIO}" "${2:-}"
+      ;;
+    *)
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

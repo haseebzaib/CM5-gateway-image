@@ -1,0 +1,11 @@
+[Unit]
+Description=Zero Axis CM5 boot chirp
+After=gateway-startup.service gateway-network-apply.service gateway-network-monitor.service
+Requires=gateway-startup.service gateway-network-apply.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/gateway/scripts/gateway-cm5-boot-chirp.sh
+
+[Install]
+WantedBy=multi-user.target

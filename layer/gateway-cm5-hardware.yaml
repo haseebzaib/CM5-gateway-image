@@ -1,0 +1,40 @@
+# METABEGIN
+# X-Env-Layer-Name: gateway-cm5-hardware
+# X-Env-Layer-Category: gateway
+# X-Env-Layer-Desc: Zero Axis CM5 hardware enablement for RTC and industrial serial ports
+# X-Env-Layer-Requires: gateway-base
+# METAEND
+---
+mmdebstrap:
+  packages:
+    - util-linux-extra
+  customize-hooks:
+    - |-
+      set -eu
+      install -d -m 0755 $1/opt/gateway/scripts
+      install -d -m 0755 $1/opt/gateway/system_related/cm5-hardware
+      install -D -m 0755 $SRCROOT/system_related/cm5-hardware/gateway-cm5-hardware-status.sh $1/opt/gateway/scripts/gateway-cm5-hardware-status.sh
+      install -D -m 0755 $SRCROOT/system_related/cm5-hardware/gateway-cm5-ioctl $1/opt/gateway/scripts/gateway-cm5-ioctl
+      install -D -m 0755 $SRCROOT/system_related/cm5-hardware/gateway-cm5-boot-chirp.sh $1/opt/gateway/scripts/gateway-cm5-boot-chirp.sh
+      install -D -m 0755 $SRCROOT/system_related/cm5-hardware/gateway-cm5-rtc-load.sh $1/opt/gateway/scripts/gateway-cm5-rtc-load.sh
+      install -D -m 0755 $SRCROOT/system_related/cm5-hardware/gateway-cm5-rtc-save.sh $1/opt/gateway/scripts/gateway-cm5-rtc-save.sh
+      install -D -m 0644 $SRCROOT/system_related/cm5-hardware/gateway-cm5-boot-chirp.service $1/etc/systemd/system/gateway-cm5-boot-chirp.service
+      install -D -m 0644 $SRCROOT/system_related/cm5-hardware/gateway-cm5-rtc-load.service $1/etc/systemd/system/gateway-cm5-rtc-load.service
+      install -D -m 0644 $SRCROOT/system_related/cm5-hardware/gateway-cm5-rtc-save.service $1/etc/systemd/system/gateway-cm5-rtc-save.service
+      install -D -m 0644 $SRCROOT/system_related/cm5-hardware/README.md $1/opt/gateway/system_related/cm5-hardware/README.md
+      config=$1/boot/firmware/config.txt
+      if ! grep -q 'BEGIN Zero Axis CM5 hardware' "$config"; then
+        printf '\n# BEGIN Zero Axis CM5 hardware\n' >> "$config"
+        printf '[cm5]\n' >> "$config"
+        printf 'enable_uart=1\n' >> "$config"
+        printf 'dtoverlay=uart2-pi5\n' >> "$config"    # Corresponds to CH0
+        printf 'dtoverlay=uart3-pi5\n' >> "$config"   # Corresponds to CH1
+        printf 'dtoverlay=uart4-pi5\n' >> "$config"   # Corresponds to CH2
+        printf 'dtoverlay=uart0-pi5\n' >> "$config"   # Corresponds to CH3
+        printf '# If you fit a rechargeable RTC battery and want charging enabled, add:\n' >> "$config"
+        printf '# dtparam=rtc_bbat_vchg=3000000\n' >> "$config"
+        printf '# END Zero Axis CM5 hardware\n' >> "$config"
+      fi
+      cmdline=$1/boot/firmware/cmdline.txt
+      sed -i 's/console=serial0,115200 //g' "$cmdline"
+    - $BDEBSTRAP_HOOKS/enable-units "$1" gateway-cm5-rtc-load gateway-cm5-rtc-save gateway-cm5-boot-chirp

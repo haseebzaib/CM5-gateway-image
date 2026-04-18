@@ -1,0 +1,12 @@
+[Unit]
+Description=Zero Axis CM5 save system clock to RTC
+ConditionPathExists=/dev/rtc0
+After=time-sync.target systemd-timesyncd.service
+Wants=time-sync.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/gateway/scripts/gateway-cm5-rtc-save.sh
+
+[Install]
+WantedBy=multi-user.target
