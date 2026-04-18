@@ -461,9 +461,26 @@ EOF
 }
 
 clear_wifi_runtime() {
-  systemctl disable --now hostapd >/dev/null 2>&1 || true
-  systemctl disable --now dnsmasq >/dev/null 2>&1 || true
-  systemctl disable --now wpa_supplicant@wlan0.service >/dev/null 2>&1 || true
+  if systemctl is-active --quiet hostapd; then
+    systemctl stop hostapd >/dev/null 2>&1 || true
+  fi
+  if systemctl is-enabled --quiet hostapd; then
+    systemctl disable hostapd >/dev/null 2>&1 || true
+  fi
+
+  if systemctl is-active --quiet dnsmasq; then
+    systemctl stop dnsmasq >/dev/null 2>&1 || true
+  fi
+  if systemctl is-enabled --quiet dnsmasq; then
+    systemctl disable dnsmasq >/dev/null 2>&1 || true
+  fi
+
+  if systemctl is-active --quiet wpa_supplicant@wlan0.service; then
+    systemctl stop wpa_supplicant@wlan0.service >/dev/null 2>&1 || true
+  fi
+  if systemctl is-enabled --quiet wpa_supplicant@wlan0.service; then
+    systemctl disable wpa_supplicant@wlan0.service >/dev/null 2>&1 || true
+  fi
 }
 
 disable_interface_runtime() {
@@ -576,7 +593,10 @@ configure_services() {
 
   if [ "${wifi_client_enabled}" = "true" ]; then
     install -D -m 0600 "${GENERATED_DIR}/wpa_supplicant/wpa_supplicant-wlan0.conf" "${WPA_FILE}"
-    systemctl enable --now wpa_supplicant@wlan0.service >/dev/null
+    if ! systemctl is-enabled --quiet wpa_supplicant@wlan0.service; then
+      systemctl enable wpa_supplicant@wlan0.service >/dev/null 2>&1 || true
+    fi
+    systemctl restart wpa_supplicant@wlan0.service >/dev/null 2>&1 || systemctl start wpa_supplicant@wlan0.service >/dev/null 2>&1 || true
 
     if [ "${ethernet_enabled}" != "true" ]; then
       log "ethernet disabled, waiting for wifi client readiness"
@@ -592,10 +612,16 @@ configure_services() {
 DAEMON_CONF="${HOSTAPD_FILE}"
 EOF
     systemctl unmask hostapd >/dev/null 2>&1 || true
-    systemctl enable --now hostapd >/dev/null
+    if ! systemctl is-enabled --quiet hostapd; then
+      systemctl enable hostapd >/dev/null 2>&1 || true
+    fi
+    systemctl restart hostapd >/dev/null 2>&1 || systemctl start hostapd >/dev/null 2>&1 || true
     if [ "${ap_dhcp_enabled}" = "true" ]; then
       install -D -m 0644 "${GENERATED_DIR}/dnsmasq/gateway-ap.conf" "${DNSMASQ_FILE}"
-      systemctl enable --now dnsmasq >/dev/null
+      if ! systemctl is-enabled --quiet dnsmasq; then
+        systemctl enable dnsmasq >/dev/null 2>&1 || true
+      fi
+      systemctl restart dnsmasq >/dev/null 2>&1 || systemctl start dnsmasq >/dev/null 2>&1 || true
     else
       rm -f "${DNSMASQ_FILE}"
     fi

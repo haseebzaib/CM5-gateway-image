@@ -17,6 +17,7 @@ NETWORKCTL="${BASE_DIR}/scripts/gateway-networkctl"
 MONITOR_INTERVAL=5
 SUMMARY_INTERVAL=60
 RECOVERY_COOLDOWN=30
+APPLY_GRACE_PERIOD=20
 
 log() {
   logger -t "${LOG_TAG}" "$*"
@@ -149,6 +150,14 @@ monitor_value() {
 recovery_value() {
   local expr="$1"
   jq -r "${expr}" "${RECOVERY_STATE_FILE}"
+}
+
+last_apply_epoch() {
+  if [ -f "${RESULT_FILE}" ]; then
+    stat -c %Y "${RESULT_FILE}" 2>/dev/null || printf '0\n'
+  else
+    printf '0\n'
+  fi
 }
 
 write_recovery_state() {
@@ -411,7 +420,7 @@ main_loop() {
   local eth_ready_count eth_fail_count eth_eligible eth_last_ready eth_internet
   local wifi_ready_count wifi_fail_count wifi_eligible wifi_last_ready wifi_internet
   local previous_pending previous_candidate last_summary_epoch
-  local recovery_reason
+  local recovery_reason last_apply_at
 
   last_summary_epoch=0
   while true; do
@@ -536,7 +545,8 @@ main_loop() {
     fi
 
     recovery_reason=""
-    if [ "${active}" = "none" ]; then
+    last_apply_at="$(last_apply_epoch)"
+    if [ "${active}" = "none" ] && [ -z "${pending}" ] && [ $((now - last_apply_at)) -ge "${APPLY_GRACE_PERIOD}" ]; then
       if [ "${wifi_enabled}" = "true" ] && ! service_active "wpa_supplicant@wlan0.service"; then
         recovery_reason="wifi enabled but wpa_supplicant@wlan0 is inactive"
       elif [ "${ethernet_enabled}" = "true" ] || [ "${wifi_enabled}" = "true" ]; then

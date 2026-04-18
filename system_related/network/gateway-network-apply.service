@@ -8,6 +8,7 @@ Wants=network-pre.target
 Type=oneshot
 ExecStart=/opt/gateway/scripts/gateway-network-apply.sh
 ExecReload=/opt/gateway/scripts/gateway-network-apply.sh
+ExecStartPost=/usr/bin/systemctl --no-block start gateway-network-monitor.service
 RemainAfterExit=yes
 
 [Install]
