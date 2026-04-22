@@ -55,7 +55,7 @@ mmdebstrap:
     - libboost-system-dev
     - sqlite3
     - libsqlite3-dev
-
+    - redis
     - libmodbus-dev
     - libserialport-dev
     - libi2c-dev

@@ -2,9 +2,8 @@
 Description=Zero Axis CM5 load system clock from RTC
 DefaultDependencies=no
 ConditionPathExists=/dev/rtc0
-After=systemd-modules-load.service dev-rtc0.device local-fs.target
-Before=sysinit.target time-sync.target shutdown.target
-Wants=dev-rtc0.device
+After=systemd-udevd.service local-fs.target
+Before=time-sync.target sysinit.target shutdown.target
 
 [Service]
 Type=oneshot
