@@ -37,6 +37,10 @@ log() {
   printf '%s\n' "$*"
 }
 
+ethernet_iface() {
+  jq -r '.network.ethernet.interface // "eth1"' "${ACTIVE_SETTINGS}"
+}
+
 ensure_layout() {
   install -d -m 0755 "${BASE_DIR}" "${SYSTEM_RELATED_DIR}" "${NETWORK_DIR}" "${CONFIG_DIR}" "${STATE_DIR}" "${GENERATED_DIR}" "${STORAGE_DIR}"
   install -d -m 0755 "${GENERATED_DIR}/systemd-networkd" "${GENERATED_DIR}/wpa_supplicant" "${GENERATED_DIR}/hostapd" "${GENERATED_DIR}/dnsmasq"
@@ -87,6 +91,7 @@ on_error() {
 
 write_state() {
   local status="$1"
+  local ethernet_iface_name
   local ethernet_addr
   local wifi_addr
   local ethernet_link
@@ -95,9 +100,10 @@ write_state() {
   local ap_clients
   local connected_ssid
 
-  ethernet_addr="$(ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | head -n1)"
+  ethernet_iface_name="$(ethernet_iface)"
+  ethernet_addr="$(ip -4 -o addr show dev "${ethernet_iface_name}" 2>/dev/null | awk '{print $4}' | head -n1)"
   wifi_addr="$(ip -4 -o addr show dev wlan0 2>/dev/null | awk '{print $4}' | head -n1)"
-  ethernet_link="$(ip -j link show eth0 2>/dev/null | jq -r 'if length == 0 then false else .[0].operstate == "UP" end')"
+  ethernet_link="$(ip -j link show "${ethernet_iface_name}" 2>/dev/null | jq -r 'if length == 0 then false else .[0].operstate == "UP" end')"
   wifi_present="$(ip link show wlan0 >/dev/null 2>&1 && printf true || printf false)"
   wifi_up="$(ip -j link show wlan0 2>/dev/null | jq -r 'if length == 0 then false else (.[0].flags | index("UP") != null) end')"
   ap_clients="$(iw dev wlan0 station dump 2>/dev/null | grep -c '^Station' || true)"
@@ -110,7 +116,7 @@ write_state() {
   "last_apply_status": "${status}",
   "last_apply_timestamp": "$(date --iso-8601=seconds)",
   "ethernet": {
-    "interface": "eth0",
+    "interface": $(json_escape "${ethernet_iface_name}"),
     "link_up": ${ethernet_link:-false},
     "address": "${ethernet_addr:-}",
     "enabled": $(jq -r '.network.ethernet.enabled' "${ACTIVE_SETTINGS}")
@@ -157,7 +163,7 @@ backup_invalid() {
 validate_config() {
   jq -e '
     .version == 1 and
-    .network.ethernet.interface == "eth0" and
+    (.network.ethernet.interface | type == "string" and length > 0) and
     .network.wifi_client.interface == "wlan0" and
     .network.wifi_ap.interface == "wlan0" and
     (.network.policy.uplink_priority | type == "array") and
@@ -272,32 +278,33 @@ EOF
 }
 
 install_networkd_files() {
-  rm -f "${NETWORKD_DIR}/01-eth0.network"
-  rm -f "${NETWORKD_DIR}/10-gateway-eth0.network" "${NETWORKD_DIR}/20-gateway-wlan0.network" "${NETWORKD_DIR}/21-gateway-wlan0-ap.network"
-  [ -f "${GENERATED_DIR}/systemd-networkd/10-gateway-eth0.network" ] && install -D -m 0644 "${GENERATED_DIR}/systemd-networkd/10-gateway-eth0.network" "${NETWORKD_DIR}/10-gateway-eth0.network"
+  rm -f "${NETWORKD_DIR}/01-eth0.network" "${NETWORKD_DIR}/01-eth1.network"
+  rm -f "${NETWORKD_DIR}/10-gateway-eth0.network" "${NETWORKD_DIR}/10-gateway-ethernet.network" "${NETWORKD_DIR}/20-gateway-wlan0.network" "${NETWORKD_DIR}/21-gateway-wlan0-ap.network"
+  [ -f "${GENERATED_DIR}/systemd-networkd/10-gateway-ethernet.network" ] && install -D -m 0644 "${GENERATED_DIR}/systemd-networkd/10-gateway-ethernet.network" "${NETWORKD_DIR}/10-gateway-ethernet.network"
   [ -f "${GENERATED_DIR}/systemd-networkd/20-gateway-wlan0.network" ] && install -D -m 0644 "${GENERATED_DIR}/systemd-networkd/20-gateway-wlan0.network" "${NETWORKD_DIR}/20-gateway-wlan0.network"
   [ -f "${GENERATED_DIR}/systemd-networkd/21-gateway-wlan0-ap.network" ] && install -D -m 0644 "${GENERATED_DIR}/systemd-networkd/21-gateway-wlan0-ap.network" "${NETWORKD_DIR}/21-gateway-wlan0-ap.network"
   return 0
 }
 
 generate_ethernet_network() {
-  local enabled dhcp metric mtu address gateway dns_list
+  local enabled dhcp metric mtu address gateway dns_list iface
 
   enabled="$(jq -r '.network.ethernet.enabled' "${ACTIVE_SETTINGS}")"
   [ "${enabled}" = "true" ] || return 0
 
+  iface="$(ethernet_iface)"
   dhcp="$(jq -r '.network.ethernet.dhcp' "${ACTIVE_SETTINGS}")"
   metric="$(jq -r '.network.ethernet.route_metric' "${ACTIVE_SETTINGS}")"
   mtu="$(jq -r '.network.ethernet.mtu' "${ACTIVE_SETTINGS}")"
   dns_list="$(jq -r '.network.ethernet.static_dns | join(" ")' "${ACTIVE_SETTINGS}")"
 
   if [ "${dhcp}" = "true" ]; then
-    write_networkd_dhcp "eth0" "${metric}" "${mtu}" "${GENERATED_DIR}/systemd-networkd/10-gateway-eth0.network"
+    write_networkd_dhcp "${iface}" "${metric}" "${mtu}" "${GENERATED_DIR}/systemd-networkd/10-gateway-ethernet.network"
   else
     address="$(jq -r '.network.ethernet.static_address' "${ACTIVE_SETTINGS}")"
     gateway="$(jq -r '.network.ethernet.static_gateway' "${ACTIVE_SETTINGS}")"
     [ -n "${address}" ] || fail "validation_error" "ethernet" "static_address_required" "Ethernet static mode requires static_address."
-    write_networkd_static "eth0" "${metric}" "${mtu}" "${address}" "${gateway}" "${dns_list}" "false" "${GENERATED_DIR}/systemd-networkd/10-gateway-eth0.network"
+    write_networkd_static "${iface}" "${metric}" "${mtu}" "${address}" "${gateway}" "${dns_list}" "false" "${GENERATED_DIR}/systemd-networkd/10-gateway-ethernet.network"
   fi
 }
 
@@ -542,14 +549,16 @@ configure_nat() {
   uplink="$(jq -r '.network.wifi_ap.shared_uplink_mode' "${ACTIVE_SETTINGS}")"
   if [ "${uplink}" = "auto" ]; then
     if [ "$(jq -r '.network.ethernet.enabled' "${ACTIVE_SETTINGS}")" = "true" ]; then
-      uplink="eth0"
+      uplink="$(ethernet_iface)"
     else
       fail "apply_error" "wifi_ap" "no_shared_uplink" "Wi-Fi AP NAT is enabled but no supported uplink is available."
     fi
   fi
 
-  [ "${uplink}" = "ethernet" ] && uplink="eth0"
-  [ "${uplink}" = "eth0" ] || fail "apply_error" "wifi_ap" "unsupported_shared_uplink" "This implementation currently supports Wi-Fi AP NAT only through Ethernet uplink."
+  if [ "${uplink}" = "ethernet" ] || [ "${uplink}" = "eth0" ]; then
+    uplink="$(ethernet_iface)"
+  fi
+  [ -n "${uplink}" ] || fail "apply_error" "wifi_ap" "unsupported_shared_uplink" "This implementation currently supports Wi-Fi AP NAT only through Ethernet uplink."
 
   printf 'net.ipv4.ip_forward=1\n' > "${SYSCTL_FILE}"
   sysctl -q -p "${SYSCTL_FILE}" >/dev/null
@@ -567,9 +576,10 @@ configure_nat() {
 
 configure_services() {
   local wifi_client_enabled wifi_ap_enabled ap_dhcp_enabled
-  local ethernet_enabled
+  local ethernet_enabled ethernet_iface_name
   local wifi_dhcp
 
+  ethernet_iface_name="$(ethernet_iface)"
   ethernet_enabled="$(jq -r '.network.ethernet.enabled' "${ACTIVE_SETTINGS}")"
   wifi_client_enabled="$(jq -r '.network.wifi_client.enabled' "${ACTIVE_SETTINGS}")"
   wifi_ap_enabled="$(jq -r '.network.wifi_ap.enabled' "${ACTIVE_SETTINGS}")"
@@ -582,7 +592,7 @@ configure_services() {
   systemctl restart systemd-resolved || true
 
   if [ "${ethernet_enabled}" != "true" ]; then
-    disable_interface_runtime "eth0"
+    disable_interface_runtime "${ethernet_iface_name}"
   fi
 
   if [ "${wifi_client_enabled}" != "true" ] && [ "${wifi_ap_enabled}" != "true" ]; then

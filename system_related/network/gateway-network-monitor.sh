@@ -24,6 +24,10 @@ log() {
   printf '%s\n' "$*"
 }
 
+ethernet_iface() {
+  jq -r '.network.ethernet.interface // "eth1"' "${ACTIVE_SETTINGS}"
+}
+
 json_escape() {
   printf '%s' "$1" | jq -Rsa .
 }
@@ -269,22 +273,24 @@ sample_uplink() {
 
 apply_route_preference() {
   local active="$1"
+  local ethernet_iface_name
   local eth_metric wifi_metric
 
+  ethernet_iface_name="$(ethernet_iface)"
   eth_metric="$(jq -r '.network.ethernet.route_metric' "${ACTIVE_SETTINGS}")"
   wifi_metric="$(jq -r '.network.wifi_client.route_metric' "${ACTIVE_SETTINGS}")"
 
   case "${active}" in
     eth0)
-      set_iface_metric "eth0" 10
+      set_iface_metric "${ethernet_iface_name}" 10
       set_iface_metric "wlan0" $((wifi_metric + 1000))
       ;;
     wifi_client)
       set_iface_metric "wlan0" 10
-      set_iface_metric "eth0" $((eth_metric + 1000))
+      set_iface_metric "${ethernet_iface_name}" $((eth_metric + 1000))
       ;;
     *)
-      set_iface_metric "eth0" "${eth_metric}"
+      set_iface_metric "${ethernet_iface_name}" "${eth_metric}"
       set_iface_metric "wlan0" "${wifi_metric}"
       ;;
   esac
@@ -315,20 +321,22 @@ write_state_snapshot() {
   local active="$1"
   local monitor_status="$2"
   local require_check="$3"
+  local ethernet_iface_name
   local current_apply_result
   local recovery_count recovery_reason recovery_timestamp
   local eth_link eth_up eth_addr eth_internet
   local wifi_present wifi_up wifi_link wifi_addr wifi_internet wifi_ssid ap_clients
 
+  ethernet_iface_name="$(ethernet_iface)"
   current_apply_result='{}'
   [ -f "${RESULT_FILE}" ] && current_apply_result="$(cat "${RESULT_FILE}")"
   recovery_count="$(recovery_value '.recovery_count // 0')"
   recovery_reason="$(recovery_value '.last_recovery_reason // ""')"
   recovery_timestamp="$(recovery_value '.last_recovery_timestamp // ""')"
 
-  eth_link="$(interface_link "eth0")"
-  eth_up="$(interface_up "eth0")"
-  eth_addr="$(interface_addr "eth0")"
+  eth_link="$(interface_link "${ethernet_iface_name}")"
+  eth_up="$(interface_up "${ethernet_iface_name}")"
+  eth_addr="$(interface_addr "${ethernet_iface_name}")"
   eth_internet="$(monitor_value '.uplinks["eth0"].internet_ok // false')"
 
   if ip link show wlan0 >/dev/null 2>&1; then
@@ -362,7 +370,7 @@ write_state_snapshot() {
     "last_timestamp": $(json_escape "${recovery_timestamp}")
   },
   "ethernet": {
-    "interface": "eth0",
+    "interface": $(json_escape "${ethernet_iface_name}"),
     "enabled": $(jq -r '.network.ethernet.enabled' "${ACTIVE_SETTINGS}"),
     "link_up": $(bool_json "${eth_link}"),
     "interface_up": $(bool_json "${eth_up}"),
@@ -414,7 +422,7 @@ attempt_runtime_recovery() {
 main_loop() {
   local current_hash require_check stable_seconds failback_enabled
   local fail_threshold recover_threshold
-  local ethernet_enabled wifi_enabled
+  local ethernet_enabled ethernet_iface_name wifi_enabled
   local active pending pending_since now previous_active last_switch_timestamp
   local candidate candidate_since
   local eth_ready_count eth_fail_count eth_eligible eth_last_ready eth_internet
@@ -450,9 +458,10 @@ main_loop() {
     fail_threshold="$(jq -r '.network.policy.fail_count_threshold // 1' "${ACTIVE_SETTINGS}")"
     recover_threshold="$(jq -r '.network.policy.recover_count_threshold // 1' "${ACTIVE_SETTINGS}")"
     ethernet_enabled="$(jq -r '.network.ethernet.enabled' "${ACTIVE_SETTINGS}")"
+    ethernet_iface_name="$(ethernet_iface)"
     wifi_enabled="$(jq -r '.network.wifi_client.enabled' "${ACTIVE_SETTINGS}")"
 
-    read -r eth_ready_count eth_fail_count eth_eligible eth_last_ready eth_internet <<<"$(sample_uplink "eth0" "eth0" "${ethernet_enabled}" "${require_check}" "${fail_threshold}" "${recover_threshold}")"
+    read -r eth_ready_count eth_fail_count eth_eligible eth_last_ready eth_internet <<<"$(sample_uplink "eth0" "${ethernet_iface_name}" "${ethernet_enabled}" "${require_check}" "${fail_threshold}" "${recover_threshold}")"
     read -r wifi_ready_count wifi_fail_count wifi_eligible wifi_last_ready wifi_internet <<<"$(sample_uplink "wifi_client" "wlan0" "${wifi_enabled}" "${require_check}" "${fail_threshold}" "${recover_threshold}")"
 
     previous_active="$(monitor_value '.active_uplink // "none"')"
@@ -484,7 +493,7 @@ main_loop() {
     case "${active}" in
       eth0)
         if [ "${eth_fail_count}" -ge "${fail_threshold}" ]; then
-          log "eth0 lost eligibility after ${eth_fail_count} failed checks"
+          log "ethernet uplink (${ethernet_iface_name}) lost eligibility after ${eth_fail_count} failed checks"
           active="none"
         fi
         ;;
@@ -561,7 +570,7 @@ main_loop() {
     fi
 
     if [ $((now - last_summary_epoch)) -ge "${SUMMARY_INTERVAL}" ]; then
-      log "summary active=${active} eth0(eligible=${eth_eligible},internet=${eth_internet},fail=${eth_fail_count}) wifi_client(eligible=${wifi_eligible},internet=${wifi_internet},fail=${wifi_fail_count})"
+      log "summary active=${active} ethernet(${ethernet_iface_name},eligible=${eth_eligible},internet=${eth_internet},fail=${eth_fail_count}) wifi_client(eligible=${wifi_eligible},internet=${wifi_internet},fail=${wifi_fail_count})"
       last_summary_epoch="${now}"
     fi
 

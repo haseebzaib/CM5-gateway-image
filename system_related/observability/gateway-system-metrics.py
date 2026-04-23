@@ -17,7 +17,7 @@ CURRENT_FILE = STATE_DIR / "metrics_current.json"
 HISTORY_FILE = STATE_DIR / "metrics_history.json"
 SAMPLE_INTERVAL = 5.0
 MAX_HISTORY = 120
-NETWORK_INTERFACES = ("eth0", "wlan0")
+NETWORK_INTERFACES = ("eth0", "eth1", "wlan0")
 
 
 def read_text(path: Path) -> str:

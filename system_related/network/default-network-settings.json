@@ -8,7 +8,7 @@
     },
     "ethernet": {
       "enabled": true,
-      "interface": "eth0",
+      "interface": "eth1",
       "role": "uplink",
       "dhcp": true,
       "static_address": "",
