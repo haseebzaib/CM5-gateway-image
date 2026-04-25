@@ -1,7 +1,7 @@
 # METABEGIN
 # X-Env-Layer-Name: gateway-network
 # X-Env-Layer-Category: gateway
-# X-Env-Layer-Desc: Zero Axis gateway network apply and monitor services
+# X-Env-Layer-Desc: Zero Axis gateway uplink management — eth0/eth1 always-up units, wifi apply/monitor services
 # X-Env-Layer-Requires: gateway-base,gateway-startup
 # METAEND
 ---
@@ -9,17 +9,30 @@ mmdebstrap:
   customize-hooks:
     - |-
       set -eu
+      # Runtime directories (flat — no system_related/ wrapper)
       install -d -m 0755 $1/opt/gateway/scripts
-      install -d -m 0755 $1/opt/gateway/system_related
-      install -d -m 0755 $1/opt/gateway/system_related/network
-      install -d -m 0755 $1/opt/gateway/system_related/network/config
-      install -d -m 0755 $1/opt/gateway/system_related/network/generated
-      install -d -m 0755 $1/opt/gateway/system_related/network/state
-      install -D -m 0644 $SRCROOT/system_related/network/default-network-settings.json $1/opt/gateway/system_related/network/config/default-network-settings.json
+      install -d -m 0755 $1/opt/gateway/network
+      install -d -m 0755 $1/opt/gateway/network/generated
+      install -d -m 0755 $1/opt/gateway/network/generated/systemd-networkd
+      install -d -m 0755 $1/opt/gateway/network/generated/wpa_supplicant
+      install -d -m 0755 $1/opt/gateway/network/generated/hostapd
+      install -d -m 0755 $1/opt/gateway/network/generated/dnsmasq
+      install -d -m 0755 $1/etc/systemd/network
+
+      # Permanent always-up units for eth0 and eth1 — never overwritten by scripts
+      install -D -m 0644 $SRCROOT/system_related/network/10-gateway-eth0.network $1/etc/systemd/network/10-gateway-eth0.network
+      install -D -m 0644 $SRCROOT/system_related/network/11-gateway-eth1.network $1/etc/systemd/network/11-gateway-eth1.network
+
+      # Default uplink settings (wifi + uplink policy only)
+      install -D -m 0644 $SRCROOT/system_related/network/default-network-settings.json $1/opt/gateway/network/defaults.json
+
+      # Uplink management scripts
       install -D -m 0755 $SRCROOT/system_related/network/gateway-network-apply.sh $1/opt/gateway/scripts/gateway-network-apply.sh
       install -D -m 0755 $SRCROOT/system_related/network/gateway-network-monitor.sh $1/opt/gateway/scripts/gateway-network-monitor.sh
       install -D -m 0755 $SRCROOT/system_related/network/gateway-network-scan.sh $1/opt/gateway/scripts/gateway-network-scan.sh
       install -D -m 0755 $SRCROOT/system_related/network/gateway-networkctl $1/opt/gateway/scripts/gateway-networkctl
+
+      # systemd service units
       install -D -m 0644 $SRCROOT/system_related/network/gateway-network-apply.service $1/etc/systemd/system/gateway-network-apply.service
       install -D -m 0644 $SRCROOT/system_related/network/gateway-network-monitor.service $1/etc/systemd/system/gateway-network-monitor.service
     - $BDEBSTRAP_HOOKS/enable-units "$1" gateway-network-apply gateway-network-monitor

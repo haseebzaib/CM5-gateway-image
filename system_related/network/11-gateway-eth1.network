@@ -1,0 +1,21 @@
+# Permanent base configuration for eth1.
+# Always up, always DHCP. Metric 200 makes eth1 secondary to eth0.
+# This file is managed by the image layer — do NOT overwrite from scripts.
+# Uplink policy (failback, priority, connectivity checks) is managed separately
+# by gateway-network-apply and gateway-network-monitor.
+
+[Match]
+Name=eth1
+
+[Link]
+MTUBytes=1500
+
+[Network]
+DHCP=yes
+MulticastDNS=no
+LinkLocalAddressing=ipv6
+
+[DHCPv4]
+RouteMetric=200
+UseDNS=yes
+UseDomains=no
