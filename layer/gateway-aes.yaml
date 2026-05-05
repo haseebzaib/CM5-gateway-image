@@ -9,7 +9,8 @@ mmdebstrap:
   customize-hooks:
     - |-
       set -eu
-      install -d -m 0755 $1/opt/gateway/software/aes
-      cp -r $SRCROOT/../../gateway_softwares/analytics_engine_software_aes/AES/. $1/opt/gateway/software/aes/
+      install -d -m 0755 $1/opt/gateway/aes_bin
+      install -d -m 0755 $1/opt/gateway/software_storage/AES
+      $SRCROOT/system_related/aes/build-install-aes.sh "$1"
       install -D -m 0644 $SRCROOT/system_related/aes/gateway-aes.service $1/etc/systemd/system/gateway-aes.service
-    - $BDEBSTRAP_HOOKS/enable-units "$1" gateway-aes
+    - $BDEBSTRAP_HOOKS/enable-units "$1" redis-server gateway-aes

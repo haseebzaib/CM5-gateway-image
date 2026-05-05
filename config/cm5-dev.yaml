@@ -19,6 +19,8 @@ layer:
   network: gateway-network
   observability: gateway-observability
   cm5_hardware: gateway-cm5-hardware
+  aes: gateway-aes
+  pes: gateway-pes
 
 locale:
   timezone: Asia/Karachi

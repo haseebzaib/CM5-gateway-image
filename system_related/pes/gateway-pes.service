@@ -1,0 +1,17 @@
+[Unit]
+Description=Zero Axis Gateway Processing Engine
+Requires=gateway-startup.service redis-server.service
+Wants=gateway-network-apply.service gateway-network-monitor.service gateway-system-metrics.service gateway-aes.service
+After=gateway-startup.service gateway-network-apply.service gateway-network-monitor.service gateway-system-metrics.service gateway-cm5-boot-chirp.service gateway-aes.service redis-server.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/gateway/pes_bin
+ExecStart=/opt/gateway/pes_bin/pes_main
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

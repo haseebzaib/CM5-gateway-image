@@ -1,12 +1,15 @@
 [Unit]
 Description=Zero Axis Gateway Analytics Engine
-After=gateway-network-apply.service
-Wants=gateway-network-apply.service
+Requires=gateway-startup.service redis-server.service
+Wants=gateway-network-apply.service gateway-network-monitor.service gateway-system-metrics.service
+After=gateway-startup.service gateway-network-apply.service gateway-network-monitor.service gateway-system-metrics.service gateway-cm5-boot-chirp.service redis-server.service
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/gateway/software/aes
-# ExecStart=python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+WorkingDirectory=/opt/gateway/aes_bin
+Environment=METACRUST_GATEWAY_ROOT=/opt/gateway
+Environment=METACRUST_STORAGE_ROOT=/opt/gateway/software_storage
+ExecStart=/opt/gateway/aes_bin/gateway-aes
 Restart=always
 RestartSec=5
 StandardOutput=journal

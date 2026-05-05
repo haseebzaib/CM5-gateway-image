@@ -1,0 +1,16 @@
+# METABEGIN
+# X-Env-Layer-Name: gateway-pes
+# X-Env-Layer-Category: gateway
+# X-Env-Layer-Desc: Zero Axis Gateway Processing Engine compiled runtime service
+# X-Env-Layer-Requires: gateway-base,gateway-startup,gateway-network,gateway-aes
+# METAEND
+---
+mmdebstrap:
+  customize-hooks:
+    - |-
+      set -eu
+      install -d -m 0755 $1/opt/gateway/pes_bin
+      install -d -m 0755 $1/opt/gateway/software_storage/PES
+      $SRCROOT/system_related/pes/build-install-pes.sh "$1"
+      install -D -m 0644 $SRCROOT/system_related/pes/gateway-pes.service $1/etc/systemd/system/gateway-pes.service
+    - $BDEBSTRAP_HOOKS/enable-units "$1" redis-server gateway-pes
