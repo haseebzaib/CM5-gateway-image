@@ -75,6 +75,7 @@ mmdebstrap:
     - python3-jinja2
     - python3-uvicorn
     - python3-itsdangerous
+    - python3-paho-mqtt
   customize-hooks:
     - |-
       set -eu
