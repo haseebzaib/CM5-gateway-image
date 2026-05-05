@@ -45,7 +45,7 @@
       "modems": []
     },
     "uplink": {
-      "priority": [
+      "uplink_priority": [
         "eth0",
         "eth1",
         "wifi_client",

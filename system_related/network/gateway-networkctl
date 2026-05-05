@@ -2,8 +2,8 @@
 set -euo pipefail
 
 BASE_DIR="/opt/gateway"
-STATE_FILE="${BASE_DIR}/system_related/network/state/network_state.json"
-RESULT_FILE="${BASE_DIR}/system_related/network/state/network_apply_result.json"
+STATE_FILE="${BASE_DIR}/network/state.json"
+RESULT_FILE="${BASE_DIR}/network/apply-result.json"
 SCRIPTS_DIR="${BASE_DIR}/scripts"
 
 cmd="${1:-}"
