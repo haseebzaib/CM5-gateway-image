@@ -36,24 +36,16 @@ set -euo pipefail
 
 cd /tmp/gateway-build/aes/src
 rm -rf /tmp/gateway-build/aes/nuitka
-python3 -m venv /tmp/gateway-build/aes/venv
+python3 -m venv --system-site-packages /tmp/gateway-build/aes/venv
 . /tmp/gateway-build/aes/venv/bin/activate
 
 python -m pip install --upgrade pip wheel
-python -m pip install \
-  'nuitka>=2.6,<3' \
-  'fastapi>=0.115,<1.0' \
-  'itsdangerous>=2.2,<3.0' \
-  'jinja2>=3.1,<4.0' \
-  'uvicorn[standard]>=0.30,<1.0' \
-  'paho-mqtt>=2,<3' \
-  'python-multipart>=0.0.9,<1.0'
+python -m pip install 'nuitka>=2.6,<3'
 
 python -m nuitka \
-  --standalone \
-  --follow-imports \
   --assume-yes-for-downloads \
   --output-dir=/tmp/gateway-build/aes/nuitka \
+  --output-filename=gateway-aes \
   --include-package=analytics_engine \
   --include-package=utils \
   --include-package=webpage \
@@ -61,47 +53,22 @@ python -m nuitka \
   --include-data-dir=/tmp/gateway-build/aes/src/webpage/static=webpage/static \
   /tmp/gateway-build/aes/src/main.py
 
-dist_dir="$(find /tmp/gateway-build/aes/nuitka -maxdepth 1 -type d -name '*.dist' | head -n1)"
-if [ -z "${dist_dir}" ]; then
-  echo "Nuitka did not produce a .dist directory" >&2
+if [ ! -x /tmp/gateway-build/aes/nuitka/gateway-aes ]; then
+  echo "Nuitka did not produce the AES executable" >&2
   exit 1
 fi
 EOCHROOT
 
-DIST_DIR="$(find "${ROOTFS}/tmp/gateway-build/aes/nuitka" -maxdepth 1 -type d -name '*.dist' | head -n1)"
-if [ -z "${DIST_DIR}" ]; then
-  echo "Nuitka did not produce a .dist directory" >&2
+EXE="${ROOTFS}/tmp/gateway-build/aes/nuitka/gateway-aes"
+if [ ! -x "${EXE}" ]; then
+  echo "Nuitka did not produce the AES executable" >&2
   exit 1
 fi
 
 rm -rf "${ROOTFS}/opt/gateway/aes_bin"
 install -d -m 0755 "${ROOTFS}/opt/gateway/aes_bin"
-cp -a "${DIST_DIR}/." "${ROOTFS}/opt/gateway/aes_bin/"
-
-exe=""
-for candidate in \
-  "${ROOTFS}/opt/gateway/aes_bin/main.bin" \
-  "${ROOTFS}/opt/gateway/aes_bin/main" \
-  "${ROOTFS}/opt/gateway/aes_bin/gateway-aes"
-do
-  if [ -x "${candidate}" ]; then
-    exe="${candidate}"
-    break
-  fi
-done
-
-if [ -z "${exe}" ]; then
-  exe="$(find "${ROOTFS}/opt/gateway/aes_bin" -maxdepth 1 -type f -perm /111 | head -n1)"
-fi
-
-if [ -z "${exe}" ]; then
-  echo "Unable to locate Nuitka AES executable" >&2
-  exit 1
-fi
-
-if [ "${exe}" != "${ROOTFS}/opt/gateway/aes_bin/gateway-aes" ]; then
-  mv "${exe}" "${ROOTFS}/opt/gateway/aes_bin/gateway-aes"
-fi
-
+install -D -m 0755 "${EXE}" "${ROOTFS}/opt/gateway/aes_bin/gateway-aes"
+install -d -m 0755 "${ROOTFS}/opt/gateway/aes_bin/webpage"
+rsync -a --delete "${AES_SRC}/webpage/templates" "${ROOTFS}/opt/gateway/aes_bin/webpage/"
+rsync -a --delete "${AES_SRC}/webpage/static" "${ROOTFS}/opt/gateway/aes_bin/webpage/"
 chmod 0755 "${ROOTFS}/opt/gateway/aes_bin/gateway-aes"
-find "${ROOTFS}/opt/gateway/aes_bin" -name '*.py' -delete

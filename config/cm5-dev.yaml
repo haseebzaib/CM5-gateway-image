@@ -21,6 +21,7 @@ layer:
   cm5_hardware: gateway-cm5-hardware
   aes: gateway-aes
   pes: gateway-pes
+  tailscale: gateway-tailscale
 
 locale:
   timezone: Asia/Karachi

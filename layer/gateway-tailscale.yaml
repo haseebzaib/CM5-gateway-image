@@ -1,0 +1,17 @@
+# METABEGIN
+# X-Env-Layer-Name: gateway-tailscale
+# X-Env-Layer-Category: gateway
+# X-Env-Layer-Desc: Zero Axis Gateway Tailscale remote access bootstrap
+# X-Env-Layer-Requires: gateway-base,gateway-aes
+# METAEND
+---
+mmdebstrap:
+  customize-hooks:
+    - |-
+      set -eu
+      chroot "$1" sh -c 'curl -fsSL https://tailscale.com/install.sh | sh'
+      install -d -m 0700 $1/opt/gateway/secrets
+      install -D -m 0600 $SRCROOT/system_related/tailscale/tailscale.env $1/opt/gateway/secrets/tailscale.env
+      install -D -m 0755 $SRCROOT/system_related/tailscale/gateway-tailscale-bootstrap.sh $1/opt/gateway/scripts/gateway-tailscale-bootstrap.sh
+      install -D -m 0644 $SRCROOT/system_related/tailscale/gateway-tailscale-bootstrap.service $1/etc/systemd/system/gateway-tailscale-bootstrap.service
+    - $BDEBSTRAP_HOOKS/enable-units "$1" tailscaled gateway-tailscale-bootstrap

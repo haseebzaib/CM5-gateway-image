@@ -76,6 +76,8 @@ mmdebstrap:
     - dnsmasq
     - iptables
     - snmp
+    - libqmi-utils
+    - udhcpc
     - python3
     - python3-fastapi
     - python3-jinja2

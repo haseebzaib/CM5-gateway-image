@@ -9,6 +9,7 @@ Type=simple
 WorkingDirectory=/opt/gateway/aes_bin
 Environment=METACRUST_GATEWAY_ROOT=/opt/gateway
 Environment=METACRUST_STORAGE_ROOT=/opt/gateway/software_storage
+Environment=AES_WEBPAGE_DIR=/opt/gateway/aes_bin/webpage
 ExecStart=/opt/gateway/aes_bin/gateway-aes
 Restart=always
 RestartSec=5

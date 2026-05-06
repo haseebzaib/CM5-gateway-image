@@ -1,0 +1,16 @@
+[Unit]
+Description=Zero Axis Gateway Tailscale bootstrap
+Wants=network-online.target
+Requires=tailscaled.service
+After=network-online.target tailscaled.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/gateway/secrets/tailscale.env
+ExecStart=/opt/gateway/scripts/gateway-tailscale-bootstrap.sh
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
