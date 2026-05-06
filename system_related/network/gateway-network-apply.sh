@@ -21,6 +21,8 @@ ACTIVE_SETTINGS="${STORAGE_DIR}/network_settings.json"
 LAST_GOOD_SETTINGS="${STORAGE_DIR}/network_settings.last_good.json"
 STATE_FILE="${NETWORK_DIR}/state.json"
 RESULT_FILE="${NETWORK_DIR}/apply-result.json"
+CELLULAR_STATE_FILE="${NETWORK_DIR}/cellular-state.json"
+CELLULARCTL="${BASE_DIR}/scripts/gateway-cellular-qmi"
 
 NETWORKD_DIR="/etc/systemd/network"
 WPA_DIR="/etc/wpa_supplicant"
@@ -90,6 +92,7 @@ on_error() {
 write_state() {
   local status="$1"
   local eth0_addr eth1_addr eth0_link eth1_link wifi_present wifi_up ap_clients connected_ssid
+  local cellular_state
 
   eth0_addr="$(ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | head -n1)"
   eth1_addr="$(ip -4 -o addr show dev eth1 2>/dev/null | awk '{print $4}' | head -n1)"
@@ -100,6 +103,8 @@ write_state() {
   ap_clients="$(iw dev wlan0 station dump 2>/dev/null | grep -c '^Station' || true)"
   connected_ssid="$(iw dev wlan0 link 2>/dev/null | awk -F': ' '/SSID:/ {print $2; exit}')"
   connected_ssid="${connected_ssid:-}"
+  cellular_state='{"enabled":false,"present":false,"backend":"qmi","interface":"wwan0","control_device":"/dev/cdc-wdm0","sim_status":"unknown","operator":"","signal_percent":0,"registered":false,"connected":false,"address":"","internet_ok":false,"rx_bytes":0,"tx_bytes":0,"session_rx_bytes":0,"session_tx_bytes":0,"last_error":""}'
+  [ -f "${CELLULAR_STATE_FILE}" ] && cellular_state="$(cat "${CELLULAR_STATE_FILE}")"
 
   write_json_file "${STATE_FILE}" <<EOF
 {
@@ -125,7 +130,26 @@ write_state() {
     "interface": "wlan0",
     "enabled": $(jq -r '.network.wifi_ap.enabled' "${ACTIVE_SETTINGS}"),
     "clients": ${ap_clients:-0}
-  }
+  },
+  "cellular": $(printf '%s' "${cellular_state}" | jq -c '{
+    enabled: (.enabled // false),
+    present: (.present // false),
+    backend: (.backend // "qmi"),
+    interface: (.interface // "wwan0"),
+    control_device: (.control_device // "/dev/cdc-wdm0"),
+    sim_status: (.sim_status // "unknown"),
+    operator: (.operator // ""),
+    signal_percent: (.signal_percent // 0),
+    registered: (.registered // false),
+    connected: (.connected // false),
+    address: (.address // ""),
+    internet_ok: (.internet_ok // false),
+    rx_bytes: (.rx_bytes // 0),
+    tx_bytes: (.tx_bytes // 0),
+    session_rx_bytes: (.session_rx_bytes // 0),
+    session_tx_bytes: (.session_tx_bytes // 0),
+    last_error: (.last_error // "")
+  }')
 }
 EOF
 }
@@ -155,6 +179,7 @@ validate_config() {
     .version == 2 and
     (.network.wifi_client.interface == "wlan0") and
     (.network.wifi_ap.interface == "wlan0") and
+    ((.network.cellular.enabled // false) | type == "boolean") and
     (.network.uplink.uplink_priority | type == "array") and
     (.network.wifi_client.route_metric | type == "number") and
     (.network.wifi_client.enabled | type == "boolean") and
@@ -197,6 +222,20 @@ validate_config() {
     if [ "$(jq -r '.network.wifi_ap.shared_uplink_mode' "${ACTIVE_SETTINGS}")" = "wifi_client" ]; then
       CURRENT_SCOPE="wifi_ap"; CURRENT_CODE="shared_uplink_unsupported"
       CURRENT_MESSAGE="Wi-Fi AP cannot use Wi-Fi client as shared uplink on the same radio."
+      return 1
+    fi
+  fi
+
+  if [ "$(jq -r '.network.cellular.enabled // false' "${ACTIVE_SETTINGS}")" = "true" ]; then
+    if [ -z "$(jq -r '.network.cellular.apn // ""' "${ACTIVE_SETTINGS}")" ]; then
+      CURRENT_SCOPE="cellular"; CURRENT_CODE="apn_required"
+      CURRENT_MESSAGE="Cellular fallback is enabled but APN is empty."
+      return 1
+    fi
+    if [ -n "$(jq -r '.network.cellular.pin // ""' "${ACTIVE_SETTINGS}")" ] && \
+       ! jq -e '(.network.cellular.pin // "") | test("^[0-9]{4,8}$")' "${ACTIVE_SETTINGS}" >/dev/null; then
+      CURRENT_SCOPE="cellular"; CURRENT_CODE="invalid_pin"
+      CURRENT_MESSAGE="Cellular SIM PIN must be 4 to 8 digits."
       return 1
     fi
   fi
@@ -410,8 +449,17 @@ clear_nat_rules() {
   iptables -t nat -X GATEWAY_POSTROUTING >/dev/null 2>&1 || true
 }
 
+uplink_iface() {
+  case "$1" in
+    eth0|eth1) printf '%s\n' "$1" ;;
+    wifi_client) printf 'wlan0\n' ;;
+    cellular) printf 'wwan0\n' ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
 configure_nat() {
-  local ap_enabled nat_enabled uplink
+  local ap_enabled nat_enabled uplink uplink_dev
 
   ap_enabled="$(jq -r '.network.wifi_ap.enabled' "${ACTIVE_SETTINGS}")"
   nat_enabled="$(jq -r '.network.wifi_ap.nat_enabled' "${ACTIVE_SETTINGS}")"
@@ -423,13 +471,19 @@ configure_nat() {
     return 0
   fi
 
-  # Use first ethernet interface from uplink priority as NAT uplink
+  # Use the active uplink when available. If AP mode is being applied before an
+  # uplink is active, fall back to the first usable non-Wi-Fi-client priority.
   uplink="$(jq -r '.network.wifi_ap.shared_uplink_mode' "${ACTIVE_SETTINGS}")"
   if [ "${uplink}" = "auto" ]; then
-    uplink="$(jq -r '(.network.uplink.uplink_priority // ["eth0","eth1"]) | map(select(startswith("eth"))) | first // "eth0"' "${ACTIVE_SETTINGS}")"
+    if [ "${ACTIVE_UPLINK}" != "none" ] && [ "${ACTIVE_UPLINK}" != "wifi_client" ]; then
+      uplink="${ACTIVE_UPLINK}"
+    else
+      uplink="$(jq -r '(.network.uplink.uplink_priority // ["eth0","eth1","cellular"]) | map(select(. != "wifi_client")) | first // "eth0"' "${ACTIVE_SETTINGS}")"
+    fi
   fi
+  uplink_dev="$(uplink_iface "${uplink}")"
 
-  [ -n "${uplink}" ] || fail "apply_error" "wifi_ap" "no_uplink_for_nat" "Wi-Fi AP NAT is enabled but no ethernet uplink found in priority list."
+  [ -n "${uplink_dev}" ] || fail "apply_error" "wifi_ap" "no_uplink_for_nat" "Wi-Fi AP NAT is enabled but no uplink found in priority list."
 
   printf 'net.ipv4.ip_forward=1\n' > "${SYSCTL_FILE}"
   sysctl -q -p "${SYSCTL_FILE}" >/dev/null
@@ -437,11 +491,11 @@ configure_nat() {
   clear_nat_rules
   iptables -N GATEWAY_FORWARD
   iptables -A FORWARD -j GATEWAY_FORWARD
-  iptables -A GATEWAY_FORWARD -i wlan0 -o "${uplink}" -j ACCEPT
-  iptables -A GATEWAY_FORWARD -i "${uplink}" -o wlan0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  iptables -A GATEWAY_FORWARD -i wlan0 -o "${uplink_dev}" -j ACCEPT
+  iptables -A GATEWAY_FORWARD -i "${uplink_dev}" -o wlan0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
   iptables -t nat -N GATEWAY_POSTROUTING
   iptables -t nat -A POSTROUTING -j GATEWAY_POSTROUTING
-  iptables -t nat -A GATEWAY_POSTROUTING -o "${uplink}" -j MASQUERADE
+  iptables -t nat -A GATEWAY_POSTROUTING -o "${uplink_dev}" -j MASQUERADE
 }
 
 configure_services() {
@@ -487,9 +541,27 @@ configure_services() {
   fi
 }
 
+configure_cellular() {
+  local cellular_enabled
+  cellular_enabled="$(jq -r '.network.cellular.enabled // false' "${ACTIVE_SETTINGS}")"
+
+  if [ ! -x "${CELLULARCTL}" ]; then
+    WARNING_MESSAGE="Cellular helper is missing; cellular uplink is unavailable."
+    return 0
+  fi
+
+  if [ "${cellular_enabled}" = "true" ]; then
+    if ! "${CELLULARCTL}" connect >/dev/null 2>&1; then
+      WARNING_MESSAGE="Cellular fallback is enabled but the modem did not connect. Check SIM, APN, and antenna."
+    fi
+  else
+    "${CELLULARCTL}" disconnect >/dev/null 2>&1 || true
+  fi
+}
+
 determine_active_uplink() {
   # eth0 and eth1 are always up — eligible if they have an IP.
-  # wifi_client is eligible only when enabled.
+  # wifi_client and cellular are eligible only when enabled.
   local entry
   while read -r entry; do
     case "${entry}" in
@@ -505,6 +577,13 @@ determine_active_uplink() {
           return
         fi
         ;;
+      cellular)
+        if [ "$(jq -r '.network.cellular.enabled // false' "${ACTIVE_SETTINGS}")" = "true" ] && \
+           [ -n "$(ip -4 -o addr show dev wwan0 2>/dev/null | awk '{print $4}' | head -n1)" ]; then
+          ACTIVE_UPLINK="cellular"
+          return
+        fi
+        ;;
     esac
   done < <(jq -r '.network.uplink.uplink_priority[]' "${ACTIVE_SETTINGS}")
   ACTIVE_UPLINK="none"
@@ -514,6 +593,7 @@ capture_generated_plan() {
   jq '{
     wifi_client: .network.wifi_client,
     wifi_ap: .network.wifi_ap,
+    cellular: .network.cellular,
     uplink: .network.uplink
   }' "${ACTIVE_SETTINGS}" > "${GENERATED_DIR}/network-plan.json"
 }
@@ -552,6 +632,7 @@ main() {
   generate_wifi_client_files
   generate_wifi_ap_files
   capture_generated_plan
+  configure_cellular
   determine_active_uplink
 
   CURRENT_SCOPE="nat"; CURRENT_CODE="nat_apply_failed"

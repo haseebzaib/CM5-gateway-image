@@ -41,8 +41,25 @@
       "shared_uplink_mode": "auto"
     },
     "cellular": {
-      "active_modem_id": "",
-      "modems": []
+      "enabled": false,
+      "active_modem_id": "sim7600",
+      "apn": "",
+      "username": "",
+      "password": "",
+      "pin": "",
+      "roaming_allowed": false,
+      "modems": [
+        {
+          "id": "sim7600",
+          "enabled": true,
+          "backend": "qmi",
+          "interface_type": "qmi",
+          "control_device": "/dev/cdc-wdm0",
+          "data_interface": "wwan0",
+          "route_metric": 500,
+          "ip_type": "4"
+        }
+      ]
     },
     "uplink": {
       "uplink_priority": [

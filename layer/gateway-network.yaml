@@ -30,6 +30,7 @@ mmdebstrap:
       install -D -m 0755 $SRCROOT/system_related/network/gateway-network-apply.sh $1/opt/gateway/scripts/gateway-network-apply.sh
       install -D -m 0755 $SRCROOT/system_related/network/gateway-network-monitor.sh $1/opt/gateway/scripts/gateway-network-monitor.sh
       install -D -m 0755 $SRCROOT/system_related/network/gateway-network-scan.sh $1/opt/gateway/scripts/gateway-network-scan.sh
+      install -D -m 0755 $SRCROOT/system_related/network/gateway-cellular-qmi $1/opt/gateway/scripts/gateway-cellular-qmi
       install -D -m 0755 $SRCROOT/system_related/network/gateway-networkctl $1/opt/gateway/scripts/gateway-networkctl
 
       # systemd service units

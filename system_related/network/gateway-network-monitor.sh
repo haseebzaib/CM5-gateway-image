@@ -18,7 +18,9 @@ STATE_FILE="${NETWORK_DIR}/state.json"
 RESULT_FILE="${NETWORK_DIR}/apply-result.json"
 MONITOR_STATE_FILE="${NETWORK_DIR}/monitor-state.json"
 RECOVERY_STATE_FILE="${NETWORK_DIR}/recovery-state.json"
+CELLULAR_STATE_FILE="${NETWORK_DIR}/cellular-state.json"
 NETWORKCTL="${BASE_DIR}/scripts/gateway-networkctl"
+CELLULARCTL="${BASE_DIR}/scripts/gateway-cellular-qmi"
 
 MONITOR_INTERVAL=5
 SUMMARY_INTERVAL=60
@@ -55,7 +57,8 @@ ensure_runtime_files() {
   "uplinks": {
     "eth0":        { "ready_count": 0, "fail_count": 0, "eligible": false, "last_ready": false, "internet_ok": false },
     "eth1":        { "ready_count": 0, "fail_count": 0, "eligible": false, "last_ready": false, "internet_ok": false },
-    "wifi_client": { "ready_count": 0, "fail_count": 0, "eligible": false, "last_ready": false, "internet_ok": false }
+    "wifi_client": { "ready_count": 0, "fail_count": 0, "eligible": false, "last_ready": false, "internet_ok": false },
+    "cellular":    { "ready_count": 0, "fail_count": 0, "eligible": false, "last_ready": false, "internet_ok": false }
   }
 }
 EOF
@@ -138,6 +141,7 @@ write_monitor_state() {
   #       eth0: ready fail eligible last_ready internet
   #       eth1: ready fail eligible last_ready internet
   #       wifi: ready fail eligible last_ready internet
+  #       cellular: ready fail eligible last_ready internet
   write_json_file "${MONITOR_STATE_FILE}" <<EOF
 {
   "last_config_hash": "$1",
@@ -148,7 +152,8 @@ write_monitor_state() {
   "uplinks": {
     "eth0":        { "ready_count": $6,  "fail_count": $7,  "eligible": $(bool_json "$8"),  "last_ready": $(bool_json "$9"),  "internet_ok": $(bool_json "${10}") },
     "eth1":        { "ready_count": ${11}, "fail_count": ${12}, "eligible": $(bool_json "${13}"), "last_ready": $(bool_json "${14}"), "internet_ok": $(bool_json "${15}") },
-    "wifi_client": { "ready_count": ${16}, "fail_count": ${17}, "eligible": $(bool_json "${18}"), "last_ready": $(bool_json "${19}"), "internet_ok": $(bool_json "${20}") }
+    "wifi_client": { "ready_count": ${16}, "fail_count": ${17}, "eligible": $(bool_json "${18}"), "last_ready": $(bool_json "${19}"), "internet_ok": $(bool_json "${20}") },
+    "cellular":    { "ready_count": ${21}, "fail_count": ${22}, "eligible": $(bool_json "${23}"), "last_ready": $(bool_json "${24}"), "internet_ok": $(bool_json "${25}") }
   }
 }
 EOF
@@ -195,8 +200,10 @@ set_iface_metric() {
 
 apply_route_preference() {
   local active="$1"
-  local wifi_metric
+  local wifi_metric cellular_metric
   wifi_metric="$(jq -r '.network.wifi_client.route_metric' "${ACTIVE_SETTINGS}")"
+  cellular_metric="$(jq -r '.network.cellular as $c | ((($c.modems // []) | map(select(.id == ($c.active_modem_id // "sim7600"))) | first | .route_metric) // 500)' "${ACTIVE_SETTINGS}" 2>/dev/null)"
+  cellular_metric="${cellular_metric:-500}"
 
   # Give active interface the lowest metric (10 = strongly preferred).
   # Non-active eth0/eth1 keep higher metrics for fallback.
@@ -205,21 +212,31 @@ apply_route_preference() {
       set_iface_metric eth0  10
       set_iface_metric eth1  200
       set_iface_metric wlan0 $((wifi_metric + 1000))
+      set_iface_metric wwan0 "${cellular_metric}"
       ;;
     eth1)
       set_iface_metric eth0  100
       set_iface_metric eth1  10
       set_iface_metric wlan0 $((wifi_metric + 1000))
+      set_iface_metric wwan0 "${cellular_metric}"
       ;;
     wifi_client)
       set_iface_metric wlan0 10
       set_iface_metric eth0  100
       set_iface_metric eth1  200
+      set_iface_metric wwan0 "${cellular_metric}"
+      ;;
+    cellular)
+      set_iface_metric wwan0 10
+      set_iface_metric eth0  100
+      set_iface_metric eth1  200
+      set_iface_metric wlan0 $((wifi_metric + 1000))
       ;;
     *)
       set_iface_metric eth0  100
       set_iface_metric eth1  200
       set_iface_metric wlan0 "${wifi_metric}"
+      set_iface_metric wwan0 "${cellular_metric}"
       ;;
   esac
 }
@@ -230,6 +247,7 @@ write_state_snapshot() {
   local eth0_link eth0_up eth0_addr eth0_internet
   local eth1_link eth1_up eth1_addr eth1_internet
   local wifi_present wifi_up wifi_link wifi_addr wifi_internet wifi_ssid ap_clients
+  local cellular_state
 
   current_apply_result='{}'; [ -f "${RESULT_FILE}" ] && current_apply_result="$(cat "${RESULT_FILE}")"
   recovery_count="$(recovery_value '.recovery_count // 0')"
@@ -258,6 +276,8 @@ write_state_snapshot() {
     wifi_present="false"; wifi_up="false"; wifi_link="false"
     wifi_addr=""; wifi_ssid=""; ap_clients=0; wifi_internet="false"
   fi
+  cellular_state='{"enabled":false,"present":false,"backend":"qmi","interface":"wwan0","control_device":"/dev/cdc-wdm0","sim_status":"unknown","operator":"","signal_percent":0,"registered":false,"connected":false,"address":"","internet_ok":false,"rx_bytes":0,"tx_bytes":0,"session_rx_bytes":0,"session_tx_bytes":0,"last_error":""}'
+  [ -f "${CELLULAR_STATE_FILE}" ] && cellular_state="$(cat "${CELLULAR_STATE_FILE}")"
 
   write_json_file "${STATE_FILE}" <<EOF
 {
@@ -298,7 +318,26 @@ write_state_snapshot() {
     "enabled": $(jq -r '.network.wifi_ap.enabled' "${ACTIVE_SETTINGS}"),
     "address": $(json_escape "${wifi_addr}"),
     "clients": ${ap_clients}
-  }
+  },
+  "cellular": $(printf '%s' "${cellular_state}" | jq -c '{
+    enabled: (.enabled // false),
+    present: (.present // false),
+    backend: (.backend // "qmi"),
+    interface: (.interface // "wwan0"),
+    control_device: (.control_device // "/dev/cdc-wdm0"),
+    sim_status: (.sim_status // "unknown"),
+    operator: (.operator // ""),
+    signal_percent: (.signal_percent // 0),
+    registered: (.registered // false),
+    connected: (.connected // false),
+    address: (.address // ""),
+    internet_ok: (.internet_ok // false),
+    rx_bytes: (.rx_bytes // 0),
+    tx_bytes: (.tx_bytes // 0),
+    session_rx_bytes: (.session_rx_bytes // 0),
+    session_tx_bytes: (.session_tx_bytes // 0),
+    last_error: (.last_error // "")
+  }')
 }
 EOF
 }
@@ -318,12 +357,13 @@ attempt_runtime_recovery() {
 
 main_loop() {
   local current_hash require_check stable_seconds failback_enabled
-  local fail_threshold recover_threshold wifi_enabled
+  local fail_threshold recover_threshold wifi_enabled cellular_enabled
   local active pending pending_since now previous_active last_switch_timestamp
   local candidate candidate_since
   local eth0_ready eth0_fail eth0_eligible eth0_last eth0_internet
   local eth1_ready eth1_fail eth1_eligible eth1_last eth1_internet
   local wifi_ready wifi_fail wifi_eligible wifi_last wifi_internet
+  local cellular_ready cellular_fail cellular_eligible cellular_last cellular_internet
   local previous_pending recovery_reason last_apply_at last_summary_epoch
 
   last_summary_epoch=0
@@ -352,11 +392,17 @@ main_loop() {
     fail_threshold="$(jq -r '.network.uplink.fail_count_threshold // 1' "${ACTIVE_SETTINGS}")"
     recover_threshold="$(jq -r '.network.uplink.recover_count_threshold // 1' "${ACTIVE_SETTINGS}")"
     wifi_enabled="$(jq -r '.network.wifi_client.enabled' "${ACTIVE_SETTINGS}")"
+    cellular_enabled="$(jq -r '.network.cellular.enabled // false' "${ACTIVE_SETTINGS}")"
+
+    if [ -x "${CELLULARCTL}" ]; then
+      "${CELLULARCTL}" refresh-state >/dev/null 2>&1 || true
+    fi
 
     # eth0 and eth1 are always enabled (permanent interfaces)
     read -r eth0_ready eth0_fail eth0_eligible eth0_last eth0_internet <<<"$(sample_uplink "eth0" "eth0" "true" "${require_check}" "${fail_threshold}" "${recover_threshold}")"
     read -r eth1_ready eth1_fail eth1_eligible eth1_last eth1_internet <<<"$(sample_uplink "eth1" "eth1" "true" "${require_check}" "${fail_threshold}" "${recover_threshold}")"
     read -r wifi_ready wifi_fail wifi_eligible wifi_last wifi_internet  <<<"$(sample_uplink "wifi_client" "wlan0" "${wifi_enabled}" "${require_check}" "${fail_threshold}" "${recover_threshold}")"
+    read -r cellular_ready cellular_fail cellular_eligible cellular_last cellular_internet <<<"$(sample_uplink "cellular" "wwan0" "${cellular_enabled}" "${require_check}" "${fail_threshold}" "${recover_threshold}")"
 
     previous_active="$(monitor_value '.active_uplink // "none"')"
     active="${previous_active}"
@@ -373,14 +419,22 @@ main_loop() {
         eth0)        [ "${eth0_eligible}" = "true" ] && { candidate="eth0"; break; } ;;
         eth1)        [ "${eth1_eligible}" = "true" ] && { candidate="eth1"; break; } ;;
         wifi_client) [ "${wifi_eligible}" = "true" ] && { candidate="wifi_client"; break; } ;;
+        cellular)    [ "${cellular_eligible}" = "true" ] && { candidate="cellular"; break; } ;;
       esac
     done < <(jq -r '.network.uplink.uplink_priority[]' "${ACTIVE_SETTINGS}")
+
+    if [ "${candidate}" = "none" ] && [ "${cellular_enabled}" = "true" ] && [ -x "${CELLULARCTL}" ]; then
+      "${CELLULARCTL}" connect >/dev/null 2>&1 || true
+      read -r cellular_ready cellular_fail cellular_eligible cellular_last cellular_internet <<<"$(sample_uplink "cellular" "wwan0" "${cellular_enabled}" "${require_check}" "${fail_threshold}" "${recover_threshold}")"
+      [ "${cellular_eligible}" = "true" ] && candidate="cellular"
+    fi
 
     # Drop active uplink if it failed
     case "${active}" in
       eth0)        [ "${eth0_fail}" -ge "${fail_threshold}" ] && { log "eth0 lost eligibility after ${eth0_fail} failed checks"; active="none"; } ;;
       eth1)        [ "${eth1_fail}" -ge "${fail_threshold}" ] && { log "eth1 lost eligibility after ${eth1_fail} failed checks"; active="none"; } ;;
       wifi_client) [ "${wifi_fail}" -ge "${fail_threshold}" ] && { log "wifi_client lost eligibility after ${wifi_fail} failed checks"; active="none"; } ;;
+      cellular)    [ "${cellular_fail}" -ge "${fail_threshold}" ] && { log "cellular lost eligibility after ${cellular_fail} failed checks"; active="none"; } ;;
     esac
 
     # Candidate stabilisation / pending logic
@@ -435,7 +489,7 @@ main_loop() {
     fi
 
     if [ $((now - last_summary_epoch)) -ge "${SUMMARY_INTERVAL}" ]; then
-      log "summary active=${active} eth0(eligible=${eth0_eligible},internet=${eth0_internet},fail=${eth0_fail}) eth1(eligible=${eth1_eligible},internet=${eth1_internet},fail=${eth1_fail}) wifi(eligible=${wifi_eligible},internet=${wifi_internet},fail=${wifi_fail})"
+      log "summary active=${active} eth0(eligible=${eth0_eligible},internet=${eth0_internet},fail=${eth0_fail}) eth1(eligible=${eth1_eligible},internet=${eth1_internet},fail=${eth1_fail}) wifi(eligible=${wifi_eligible},internet=${wifi_internet},fail=${wifi_fail}) cellular(eligible=${cellular_eligible},internet=${cellular_internet},fail=${cellular_fail})"
       last_summary_epoch="${now}"
     fi
 
@@ -443,7 +497,8 @@ main_loop() {
       "${current_hash}" "${pending}" "${pending_since}" "${active}" "${last_switch_timestamp}" \
       "${eth0_ready}" "${eth0_fail}" "${eth0_eligible}" "${eth0_last}" "${eth0_internet}" \
       "${eth1_ready}" "${eth1_fail}" "${eth1_eligible}" "${eth1_last}" "${eth1_internet}" \
-      "${wifi_ready}" "${wifi_fail}" "${wifi_eligible}" "${wifi_last}" "${wifi_internet}"
+      "${wifi_ready}" "${wifi_fail}" "${wifi_eligible}" "${wifi_last}" "${wifi_internet}" \
+      "${cellular_ready}" "${cellular_fail}" "${cellular_eligible}" "${cellular_last}" "${cellular_internet}"
 
     write_state_snapshot "${active}" "running" "${require_check}"
     sleep "${MONITOR_INTERVAL}"

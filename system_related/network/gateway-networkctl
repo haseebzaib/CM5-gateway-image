@@ -4,6 +4,7 @@ set -euo pipefail
 BASE_DIR="/opt/gateway"
 STATE_FILE="${BASE_DIR}/network/state.json"
 RESULT_FILE="${BASE_DIR}/network/apply-result.json"
+CELLULAR_STATE_FILE="${BASE_DIR}/network/cellular-state.json"
 SCRIPTS_DIR="${BASE_DIR}/scripts"
 
 cmd="${1:-}"
@@ -21,6 +22,12 @@ case "${cmd}" in
   scan-wifi)
     exec "${SCRIPTS_DIR}/gateway-network-scan.sh" "${2:-wlan0}"
     ;;
+  cellular)
+    exec "${SCRIPTS_DIR}/gateway-cellular-qmi" "${2:-status}"
+    ;;
+  cellular-state)
+    exec cat "${CELLULAR_STATE_FILE}"
+    ;;
   *)
     cat <<'EOF'
 Usage:
@@ -28,6 +35,8 @@ Usage:
   gateway-networkctl state
   gateway-networkctl result
   gateway-networkctl scan-wifi [iface]
+  gateway-networkctl cellular [status|refresh-state|connect|disconnect]
+  gateway-networkctl cellular-state
 EOF
     exit 1
     ;;
