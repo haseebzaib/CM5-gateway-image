@@ -19,6 +19,7 @@ RESULT_FILE="${NETWORK_DIR}/apply-result.json"
 MONITOR_STATE_FILE="${NETWORK_DIR}/monitor-state.json"
 RECOVERY_STATE_FILE="${NETWORK_DIR}/recovery-state.json"
 CELLULAR_STATE_FILE="${NETWORK_DIR}/cellular-state.json"
+CELLULAR_RETRY_STATE_FILE="${NETWORK_DIR}/cellular-retry-state.json"
 NETWORKCTL="${BASE_DIR}/scripts/gateway-networkctl"
 CELLULARCTL="${BASE_DIR}/scripts/gateway-cellular-qmi"
 
@@ -26,6 +27,8 @@ MONITOR_INTERVAL=5
 SUMMARY_INTERVAL=60
 RECOVERY_COOLDOWN=30
 APPLY_GRACE_PERIOD=20
+CELLULAR_RETRY_MIN_INTERVAL=60
+CELLULAR_RETRY_MAX_INTERVAL=300
 
 log() {
   logger -t "${LOG_TAG}" "$*"
@@ -68,6 +71,11 @@ EOF
 { "last_recovery_timestamp": "", "last_recovery_epoch": 0, "recovery_count": 0, "last_recovery_reason": "" }
 EOF
   fi
+  if [ ! -f "${CELLULAR_RETRY_STATE_FILE}" ]; then
+    write_json_file "${CELLULAR_RETRY_STATE_FILE}" <<'EOF'
+{ "last_attempt_timestamp": "", "last_attempt_epoch": 0, "next_attempt_epoch": 0, "attempt_count": 0, "last_result": "", "last_reason": "" }
+EOF
+  fi
 }
 
 bool_json() { [ "$1" = "true" ] && printf true || printf false; }
@@ -80,6 +88,66 @@ load_connectivity_targets() {
   mapfile -t CONNECTIVITY_TARGETS < <(jq -r '.network.uplink.connectivity_targets[]? // empty' "${ACTIVE_SETTINGS}")
   if [ "${#CONNECTIVITY_TARGETS[@]}" -eq 0 ]; then
     CONNECTIVITY_TARGETS=("1.1.1.1" "8.8.8.8")
+  fi
+}
+
+cellular_state_json() {
+  if [ -f "${CELLULAR_STATE_FILE}" ] && jq empty "${CELLULAR_STATE_FILE}" >/dev/null 2>&1; then
+    cat "${CELLULAR_STATE_FILE}"
+  else
+    printf '{}\n'
+  fi
+}
+
+cellular_state_key() {
+  cellular_state_json | jq -r '
+    [
+      (.enabled // false),
+      (.present // false),
+      (.sim_status // "unknown"),
+      (.operator // ""),
+      (.signal_percent // 0),
+      (.registered // false),
+      (.connected // false),
+      (.address // ""),
+      (.internet_ok // false),
+      (.last_error // "")
+    ] | @tsv
+  '
+}
+
+cellular_status_text() {
+  cellular_state_json | jq -r '
+    "cellular state enabled=\(.enabled // false)" +
+    " present=\(.present // false)" +
+    " sim=\(.sim_status // "unknown")" +
+    " operator=\(.operator // "")" +
+    " signal=\(.signal_percent // 0)" +
+    " registered=\(.registered // false)" +
+    " connected=\(.connected // false)" +
+    " address=\(.address // "")" +
+    " internet=\(.internet_ok // false)" +
+    " error=\((.last_error // "") | gsub("[\r\n]+"; " ") | .[0:180])"
+  '
+}
+
+log_cellular_state_if_changed() {
+  local current_key="$1" previous_key="$2"
+  [ "${current_key}" = "${previous_key}" ] && return 0
+  log "$(cellular_status_text)"
+}
+
+run_apply() {
+  local reason="$1" output status active warnings
+  output="/tmp/gateway-network-monitor-apply.log"
+  log "${reason}, triggering apply"
+  if "${NETWORKCTL}" apply >"${output}" 2>&1; then
+    status="$(jq -r '.status // "unknown"' "${RESULT_FILE}" 2>/dev/null || printf unknown)"
+    active="$(jq -r '.active_uplink // "none"' "${RESULT_FILE}" 2>/dev/null || printf none)"
+    warnings="$(jq -r '[.warnings[]?.message] | join("; ")' "${RESULT_FILE}" 2>/dev/null || true)"
+    log "apply finished status=${status} active_uplink=${active}$([ -n "${warnings}" ] && printf ' warnings=%s' "${warnings}")"
+  else
+    log "apply command failed: $(tr '\r\n' '  ' < "${output}" | sed 's/[[:space:]][[:space:]]*/ /g' | cut -c1-240)"
   fi
 }
 
@@ -114,6 +182,7 @@ effective_ready() {
 
 monitor_value()   { jq -r "$1" "${MONITOR_STATE_FILE}"; }
 recovery_value()  { jq -r "$1" "${RECOVERY_STATE_FILE}"; }
+cellular_retry_value() { jq -r "$1" "${CELLULAR_RETRY_STATE_FILE}"; }
 
 last_apply_epoch() {
   [ -f "${RESULT_FILE}" ] && stat -c %Y "${RESULT_FILE}" 2>/dev/null || printf '0\n'
@@ -134,6 +203,27 @@ reset_recovery_state() {
   write_json_file "${RECOVERY_STATE_FILE}" <<'EOF'
 { "last_recovery_timestamp": "", "last_recovery_epoch": 0, "recovery_count": 0, "last_recovery_reason": "" }
 EOF
+}
+
+write_cellular_retry_state() {
+  local last_epoch="$1" next_epoch="$2" attempt_count="$3" result="$4" reason="$5"
+  local timestamp
+  timestamp=""
+  [ "${last_epoch}" -gt 0 ] && timestamp="$(date --date="@${last_epoch}" --iso-8601=seconds 2>/dev/null || date --iso-8601=seconds)"
+  write_json_file "${CELLULAR_RETRY_STATE_FILE}" <<EOF
+{
+  "last_attempt_timestamp": $(json_escape "${timestamp}"),
+  "last_attempt_epoch": ${last_epoch},
+  "next_attempt_epoch": ${next_epoch},
+  "attempt_count": ${attempt_count},
+  "last_result": $(json_escape "${result}"),
+  "last_reason": $(json_escape "${reason}")
+}
+EOF
+}
+
+reset_cellular_retry_state() {
+  write_cellular_retry_state 0 0 0 "" ""
 }
 
 write_monitor_state() {
@@ -247,7 +337,7 @@ write_state_snapshot() {
   local eth0_link eth0_up eth0_addr eth0_internet
   local eth1_link eth1_up eth1_addr eth1_internet
   local wifi_present wifi_up wifi_link wifi_addr wifi_internet wifi_ssid ap_clients
-  local cellular_state
+  local cellular_state cellular_retry_state cellular_for_state
 
   current_apply_result='{}'; [ -f "${RESULT_FILE}" ] && current_apply_result="$(cat "${RESULT_FILE}")"
   recovery_count="$(recovery_value '.recovery_count // 0')"
@@ -276,8 +366,48 @@ write_state_snapshot() {
     wifi_present="false"; wifi_up="false"; wifi_link="false"
     wifi_addr=""; wifi_ssid=""; ap_clients=0; wifi_internet="false"
   fi
-  cellular_state='{"enabled":false,"present":false,"backend":"qmi","interface":"wwan0","control_device":"/dev/cdc-wdm0","sim_status":"unknown","operator":"","signal_percent":0,"registered":false,"connected":false,"address":"","internet_ok":false,"rx_bytes":0,"tx_bytes":0,"session_rx_bytes":0,"session_tx_bytes":0,"last_error":""}'
+  cellular_state='{"enabled":false,"present":false,"backend":"qmi","interface":"wwan0","control_device":"/dev/cdc-wdm0","modem_manufacturer":"","modem_model":"","modem_revision":"","sim_status":"unknown","operator":"","signal_dbm":0,"signal_percent":0,"registration_state":"unknown","registered":false,"roaming":false,"access_technology":"","connected":false,"address":"","gateway":"","dns":[],"internet_ok":false,"rx_bytes":0,"tx_bytes":0,"session_rx_bytes":0,"session_tx_bytes":0,"last_connect_timestamp":"","last_disconnect_timestamp":"","last_error":""}'
   [ -f "${CELLULAR_STATE_FILE}" ] && cellular_state="$(cat "${CELLULAR_STATE_FILE}")"
+  cellular_retry_state='{"last_attempt_timestamp":"","last_attempt_epoch":0,"next_attempt_epoch":0,"attempt_count":0,"last_result":"","last_reason":""}'
+  [ -f "${CELLULAR_RETRY_STATE_FILE}" ] && cellular_retry_state="$(cat "${CELLULAR_RETRY_STATE_FILE}")"
+  cellular_for_state="$(printf '%s' "${cellular_state}" | jq -c --argjson retry "${cellular_retry_state}" '{
+    enabled: (.enabled // false),
+    present: (.present // false),
+    backend: (.backend // "qmi"),
+    interface: (.interface // "wwan0"),
+    control_device: (.control_device // "/dev/cdc-wdm0"),
+    modem_manufacturer: (.modem_manufacturer // ""),
+    modem_model: (.modem_model // ""),
+    modem_revision: (.modem_revision // ""),
+    sim_status: (.sim_status // "unknown"),
+    operator: (.operator // ""),
+    signal_dbm: (.signal_dbm // 0),
+    signal_percent: (.signal_percent // 0),
+    registration_state: (.registration_state // "unknown"),
+    registered: (.registered // false),
+    roaming: (.roaming // false),
+    access_technology: (.access_technology // ""),
+    connected: (.connected // false),
+    address: (.address // ""),
+    gateway: (.gateway // ""),
+    dns: (.dns // []),
+    internet_ok: (.internet_ok // false),
+    rx_bytes: (.rx_bytes // 0),
+    tx_bytes: (.tx_bytes // 0),
+    session_rx_bytes: (.session_rx_bytes // 0),
+    session_tx_bytes: (.session_tx_bytes // 0),
+    last_connect_timestamp: (.last_connect_timestamp // ""),
+    last_disconnect_timestamp: (.last_disconnect_timestamp // ""),
+    last_error: (.last_error // ""),
+    retry: {
+      last_attempt_timestamp: ($retry.last_attempt_timestamp // ""),
+      last_attempt_epoch: ($retry.last_attempt_epoch // 0),
+      next_attempt_epoch: ($retry.next_attempt_epoch // 0),
+      attempt_count: ($retry.attempt_count // 0),
+      last_result: ($retry.last_result // ""),
+      last_reason: ($retry.last_reason // "")
+    }
+  }')"
 
   write_json_file "${STATE_FILE}" <<EOF
 {
@@ -319,25 +449,7 @@ write_state_snapshot() {
     "address": $(json_escape "${wifi_addr}"),
     "clients": ${ap_clients}
   },
-  "cellular": $(printf '%s' "${cellular_state}" | jq -c '{
-    enabled: (.enabled // false),
-    present: (.present // false),
-    backend: (.backend // "qmi"),
-    interface: (.interface // "wwan0"),
-    control_device: (.control_device // "/dev/cdc-wdm0"),
-    sim_status: (.sim_status // "unknown"),
-    operator: (.operator // ""),
-    signal_percent: (.signal_percent // 0),
-    registered: (.registered // false),
-    connected: (.connected // false),
-    address: (.address // ""),
-    internet_ok: (.internet_ok // false),
-    rx_bytes: (.rx_bytes // 0),
-    tx_bytes: (.tx_bytes // 0),
-    session_rx_bytes: (.session_rx_bytes // 0),
-    session_tx_bytes: (.session_tx_bytes // 0),
-    last_error: (.last_error // "")
-  }')
+  "cellular": ${cellular_for_state}
 }
 EOF
 }
@@ -355,6 +467,63 @@ attempt_runtime_recovery() {
   write_recovery_state "${now}" "${recovery_count}" "${reason}"
 }
 
+cellular_connect_blocker() {
+  local cellular_enabled="$1"
+  local apn sim_status present connected
+  [ "${cellular_enabled}" = "true" ] || { printf 'disabled\n'; return 0; }
+  apn="$(jq -r '.network.cellular.apn // ""' "${ACTIVE_SETTINGS}")"
+  [ -n "${apn}" ] || { printf 'apn_missing\n'; return 0; }
+  present="$(cellular_state_json | jq -r '.present // false')"
+  [ "${present}" = "true" ] || { printf 'modem_missing\n'; return 0; }
+  sim_status="$(cellular_state_json | jq -r '.sim_status // "unknown"')"
+  case "${sim_status}" in
+    ready|present) ;;
+    locked) printf 'sim_locked\n'; return 0 ;;
+    missing) printf 'sim_missing\n'; return 0 ;;
+    *) printf "sim_${sim_status}\n"; return 0 ;;
+  esac
+  connected="$(cellular_state_json | jq -r '.connected // false')"
+  [ "${connected}" != "true" ] || { printf 'already_connected\n'; return 0; }
+  printf '\n'
+}
+
+maybe_connect_cellular() {
+  local now="$1" cellular_enabled="$2"
+  local blocker last_attempt next_attempt attempt_count interval output
+
+  blocker="$(cellular_connect_blocker "${cellular_enabled}")"
+  if [ -n "${blocker}" ]; then
+    if [ "${blocker}" = "already_connected" ]; then
+      reset_cellular_retry_state
+    else
+      write_cellular_retry_state 0 0 0 "blocked" "${blocker}"
+    fi
+    return 1
+  fi
+
+  last_attempt="$(cellular_retry_value '.last_attempt_epoch // 0')"
+  next_attempt="$(cellular_retry_value '.next_attempt_epoch // 0')"
+  attempt_count="$(cellular_retry_value '.attempt_count // 0')"
+  if [ "${next_attempt}" -gt "${now}" ]; then
+    return 1
+  fi
+
+  attempt_count=$((attempt_count + 1))
+  output="/tmp/gateway-network-monitor-cellular-connect.log"
+  log "cellular retry attempt ${attempt_count}: requesting connect"
+  if "${CELLULARCTL}" connect >"${output}" 2>&1; then
+    write_cellular_retry_state "${now}" 0 0 "connected" ""
+    log "cellular retry succeeded"
+    return 0
+  fi
+
+  interval=$((CELLULAR_RETRY_MIN_INTERVAL * attempt_count))
+  [ "${interval}" -gt "${CELLULAR_RETRY_MAX_INTERVAL}" ] && interval="${CELLULAR_RETRY_MAX_INTERVAL}"
+  write_cellular_retry_state "${now}" $((now + interval)) "${attempt_count}" "failed" "$(tr '\r\n' '  ' < "${output}" | sed 's/[[:space:]][[:space:]]*/ /g' | cut -c1-180)"
+  log "cellular retry failed; next attempt in ${interval}s"
+  return 1
+}
+
 main_loop() {
   local current_hash require_check stable_seconds failback_enabled
   local fail_threshold recover_threshold wifi_enabled cellular_enabled
@@ -365,14 +534,16 @@ main_loop() {
   local wifi_ready wifi_fail wifi_eligible wifi_last wifi_internet
   local cellular_ready cellular_fail cellular_eligible cellular_last cellular_internet
   local previous_pending recovery_reason last_apply_at last_summary_epoch
+  local previous_cellular_key cellular_key cellular_summary
 
   last_summary_epoch=0
+  previous_cellular_key=""
 
   while true; do
     ensure_runtime_files
 
     if [ ! -f "${ACTIVE_SETTINGS}" ]; then
-      "${NETWORKCTL}" apply >/dev/null 2>&1 || true
+      run_apply "active settings missing"
       sleep "${MONITOR_INTERVAL}"
       continue
     fi
@@ -380,7 +551,7 @@ main_loop() {
     current_hash="$(sha256sum "${ACTIVE_SETTINGS}" | awk '{print $1}')"
     LAST_HASH="$(monitor_value '.last_config_hash // ""')"
     if [ "${current_hash}" != "${LAST_HASH}" ]; then
-      [ -n "${LAST_HASH}" ] && { log "settings changed, triggering apply"; "${NETWORKCTL}" apply >/dev/null 2>&1 || true; }
+      [ -n "${LAST_HASH}" ] && run_apply "settings changed"
       LAST_HASH="${current_hash}"
     fi
 
@@ -396,6 +567,12 @@ main_loop() {
 
     if [ -x "${CELLULARCTL}" ]; then
       "${CELLULARCTL}" refresh-state >/dev/null 2>&1 || true
+      cellular_key="$(cellular_state_key)"
+      log_cellular_state_if_changed "${cellular_key}" "${previous_cellular_key}"
+      previous_cellular_key="${cellular_key}"
+      if [ "${cellular_enabled}" != "true" ] || [ "$(cellular_state_json | jq -r '.connected // false')" = "true" ]; then
+        reset_cellular_retry_state
+      fi
     fi
 
     # eth0 and eth1 are always enabled (permanent interfaces)
@@ -424,7 +601,10 @@ main_loop() {
     done < <(jq -r '.network.uplink.uplink_priority[]' "${ACTIVE_SETTINGS}")
 
     if [ "${candidate}" = "none" ] && [ "${cellular_enabled}" = "true" ] && [ -x "${CELLULARCTL}" ]; then
-      "${CELLULARCTL}" connect >/dev/null 2>&1 || true
+      maybe_connect_cellular "${now}" "${cellular_enabled}" || true
+      cellular_key="$(cellular_state_key)"
+      log_cellular_state_if_changed "${cellular_key}" "${previous_cellular_key}"
+      previous_cellular_key="${cellular_key}"
       read -r cellular_ready cellular_fail cellular_eligible cellular_last cellular_internet <<<"$(sample_uplink "cellular" "wwan0" "${cellular_enabled}" "${require_check}" "${fail_threshold}" "${recover_threshold}")"
       [ "${cellular_eligible}" = "true" ] && candidate="cellular"
     fi
@@ -489,7 +669,8 @@ main_loop() {
     fi
 
     if [ $((now - last_summary_epoch)) -ge "${SUMMARY_INTERVAL}" ]; then
-      log "summary active=${active} eth0(eligible=${eth0_eligible},internet=${eth0_internet},fail=${eth0_fail}) eth1(eligible=${eth1_eligible},internet=${eth1_internet},fail=${eth1_fail}) wifi(eligible=${wifi_eligible},internet=${wifi_internet},fail=${wifi_fail}) cellular(eligible=${cellular_eligible},internet=${cellular_internet},fail=${cellular_fail})"
+      cellular_summary="$(cellular_status_text | sed 's/^cellular state //')"
+      log "summary active=${active} eth0(eligible=${eth0_eligible},internet=${eth0_internet},fail=${eth0_fail},addr=$(interface_addr eth0)) eth1(eligible=${eth1_eligible},internet=${eth1_internet},fail=${eth1_fail},addr=$(interface_addr eth1)) wifi(eligible=${wifi_eligible},internet=${wifi_internet},fail=${wifi_fail},addr=$(interface_addr wlan0)) cellular(eligible=${cellular_eligible},internet=${cellular_internet},fail=${cellular_fail},${cellular_summary})"
       last_summary_epoch="${now}"
     fi
 

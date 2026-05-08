@@ -103,7 +103,7 @@ write_state() {
   ap_clients="$(iw dev wlan0 station dump 2>/dev/null | grep -c '^Station' || true)"
   connected_ssid="$(iw dev wlan0 link 2>/dev/null | awk -F': ' '/SSID:/ {print $2; exit}')"
   connected_ssid="${connected_ssid:-}"
-  cellular_state='{"enabled":false,"present":false,"backend":"qmi","interface":"wwan0","control_device":"/dev/cdc-wdm0","sim_status":"unknown","operator":"","signal_percent":0,"registered":false,"connected":false,"address":"","internet_ok":false,"rx_bytes":0,"tx_bytes":0,"session_rx_bytes":0,"session_tx_bytes":0,"last_error":""}'
+  cellular_state='{"enabled":false,"present":false,"backend":"qmi","interface":"wwan0","control_device":"/dev/cdc-wdm0","modem_manufacturer":"","modem_model":"","modem_revision":"","sim_status":"unknown","operator":"","signal_dbm":0,"signal_percent":0,"registration_state":"unknown","registered":false,"roaming":false,"access_technology":"","connected":false,"address":"","gateway":"","dns":[],"internet_ok":false,"rx_bytes":0,"tx_bytes":0,"session_rx_bytes":0,"session_tx_bytes":0,"last_connect_timestamp":"","last_disconnect_timestamp":"","last_error":""}'
   [ -f "${CELLULAR_STATE_FILE}" ] && cellular_state="$(cat "${CELLULAR_STATE_FILE}")"
 
   write_json_file "${STATE_FILE}" <<EOF
@@ -137,17 +137,28 @@ write_state() {
     backend: (.backend // "qmi"),
     interface: (.interface // "wwan0"),
     control_device: (.control_device // "/dev/cdc-wdm0"),
+    modem_manufacturer: (.modem_manufacturer // ""),
+    modem_model: (.modem_model // ""),
+    modem_revision: (.modem_revision // ""),
     sim_status: (.sim_status // "unknown"),
     operator: (.operator // ""),
+    signal_dbm: (.signal_dbm // 0),
     signal_percent: (.signal_percent // 0),
+    registration_state: (.registration_state // "unknown"),
     registered: (.registered // false),
+    roaming: (.roaming // false),
+    access_technology: (.access_technology // ""),
     connected: (.connected // false),
     address: (.address // ""),
+    gateway: (.gateway // ""),
+    dns: (.dns // []),
     internet_ok: (.internet_ok // false),
     rx_bytes: (.rx_bytes // 0),
     tx_bytes: (.tx_bytes // 0),
     session_rx_bytes: (.session_rx_bytes // 0),
     session_tx_bytes: (.session_tx_bytes // 0),
+    last_connect_timestamp: (.last_connect_timestamp // ""),
+    last_disconnect_timestamp: (.last_disconnect_timestamp // ""),
     last_error: (.last_error // "")
   }')
 }
@@ -547,14 +558,20 @@ configure_cellular() {
 
   if [ ! -x "${CELLULARCTL}" ]; then
     WARNING_MESSAGE="Cellular helper is missing; cellular uplink is unavailable."
+    log "cellular apply skipped: helper missing at ${CELLULARCTL}"
     return 0
   fi
 
   if [ "${cellular_enabled}" = "true" ]; then
+    log "cellular apply: enabled, requesting modem connect"
     if ! "${CELLULARCTL}" connect >/dev/null 2>&1; then
       WARNING_MESSAGE="Cellular fallback is enabled but the modem did not connect. Check SIM, APN, and antenna."
+      log "cellular apply warning: modem did not connect"
+    else
+      log "cellular apply: connect command completed"
     fi
   else
+    log "cellular apply: disabled, ensuring data session is stopped"
     "${CELLULARCTL}" disconnect >/dev/null 2>&1 || true
   fi
 }
