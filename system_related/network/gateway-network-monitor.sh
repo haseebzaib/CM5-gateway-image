@@ -139,6 +139,59 @@ interface_up()   { ip -j link show "$1" 2>/dev/null | jq -r 'if length == 0 then
 interface_link() { ip -j link show "$1" 2>/dev/null | jq -r 'if length == 0 then false else .[0].operstate == "UP" end'; }
 interface_addr() { ip -4 -o addr show dev "$1" 2>/dev/null | awk '{print $4}' | head -n1; }
 
+unit_enabled() {
+  systemctl is-enabled --quiet "$1" >/dev/null 2>&1 && printf true || printf false
+}
+
+wpa_status_value() {
+  local field="$1"
+  command -v wpa_cli >/dev/null 2>&1 || return 0
+  wpa_cli -i wlan0 status 2>/dev/null | awk -F= -v field="${field}" '$1 == field {print $2; exit}'
+}
+
+wifi_link_value() {
+  local field="$1"
+  iw dev wlan0 link 2>/dev/null | awk -v field="${field}" '
+    field == "bssid" && /^Connected to / { print $3; exit }
+    field == "freq" && /^[[:space:]]*freq:/ { print $2; exit }
+    field == "signal" && /^[[:space:]]*signal:/ { print $2; exit }
+    field == "tx_bitrate" && /^[[:space:]]*tx bitrate:/ {
+      sub(/^[[:space:]]*tx bitrate:[[:space:]]*/, "")
+      print
+      exit
+    }
+  '
+}
+
+wifi_status_reason() {
+  local enabled="$1" present="$2" configured_ssid="$3" service_active="$4" wpa_state="$5" connected_ssid="$6" address="$7" internet_state="$8"
+  if [ "${enabled}" != "true" ]; then
+    printf 'disabled\n'
+  elif [ "${present}" != "true" ]; then
+    printf 'interface_missing\n'
+  elif [ -z "${configured_ssid}" ]; then
+    printf 'ssid_missing\n'
+  elif [ "${service_active}" != "true" ]; then
+    printf 'supplicant_inactive\n'
+  elif [ -n "${connected_ssid}" ] && [ -n "${address}" ] && [ "${internet_state}" = "true" ]; then
+    printf 'connected_internet_ok\n'
+  elif [ -n "${connected_ssid}" ] && [ -n "${address}" ]; then
+    printf 'connected_no_internet\n'
+  elif [ -n "${connected_ssid}" ]; then
+    printf 'waiting_for_ip\n'
+  else
+    case "${wpa_state}" in
+      COMPLETED) printf 'waiting_for_ip\n' ;;
+      4WAY_HANDSHAKE|GROUP_HANDSHAKE) printf 'authenticating\n' ;;
+      ASSOCIATING|ASSOCIATED) printf 'associating\n' ;;
+      SCANNING) printf 'scanning\n' ;;
+      DISCONNECTED) printf 'disconnected\n' ;;
+      INTERFACE_DISABLED) printf 'interface_disabled\n' ;;
+      *) printf 'supplicant_status_unavailable\n' ;;
+    esac
+  fi
+}
+
 load_connectivity_targets() {
   mapfile -t CONNECTIVITY_TARGETS < <(jq -r '.network.uplink.connectivity_targets[]? // empty' "${ACTIVE_SETTINGS}")
   if [ "${#CONNECTIVITY_TARGETS[@]}" -eq 0 ]; then
@@ -643,6 +696,9 @@ write_state_snapshot() {
   local eth0_link eth0_up eth0_addr eth0_internet
   local eth1_link eth1_up eth1_addr eth1_internet
   local wifi_present wifi_up wifi_link wifi_addr wifi_internet wifi_ssid ap_clients
+  local wifi_configured_ssid wifi_hidden wifi_security wifi_band wifi_country wifi_dhcp wifi_metric
+  local wifi_service_active wifi_service_enabled wifi_wpa_state wifi_wpa_ssid wifi_wpa_bssid
+  local wifi_bssid wifi_freq wifi_signal wifi_tx_bitrate wifi_reason wifi_ap_enabled
   local cellular_state cellular_retry_state cellular_for_state uplink_stats active_interface
   local tailscale_trigger_count tailscale_trigger_reason tailscale_trigger_timestamp
 
@@ -687,6 +743,24 @@ write_state_snapshot() {
     wifi_present="false"; wifi_up="false"; wifi_link="false"
     wifi_addr=""; wifi_ssid=""; ap_clients=0; wifi_internet="false"
   fi
+  wifi_configured_ssid="$(jq -r '.network.wifi_client.ssid // ""' "${ACTIVE_SETTINGS}")"
+  wifi_hidden="$(jq -r '.network.wifi_client.hidden_ssid // false' "${ACTIVE_SETTINGS}")"
+  wifi_security="$(jq -r '.network.wifi_client.security // ""' "${ACTIVE_SETTINGS}")"
+  wifi_band="$(jq -r '.network.wifi_client.band // ""' "${ACTIVE_SETTINGS}")"
+  wifi_country="$(jq -r '.network.wifi_client.country_code // ""' "${ACTIVE_SETTINGS}")"
+  wifi_dhcp="$(jq -r '.network.wifi_client.dhcp // true' "${ACTIVE_SETTINGS}")"
+  wifi_metric="$(jq -r '.network.wifi_client.route_metric // 300' "${ACTIVE_SETTINGS}")"
+  wifi_ap_enabled="$(jq -r '.network.wifi_ap.enabled // false' "${ACTIVE_SETTINGS}")"
+  service_active "wpa_supplicant@wlan0.service" && wifi_service_active="true" || wifi_service_active="false"
+  wifi_service_enabled="$(unit_enabled "wpa_supplicant@wlan0.service")"
+  wifi_wpa_state="$(wpa_status_value wpa_state)"
+  wifi_wpa_ssid="$(wpa_status_value ssid)"
+  wifi_wpa_bssid="$(wpa_status_value bssid)"
+  wifi_bssid="$(wifi_link_value bssid)"
+  wifi_freq="$(wifi_link_value freq)"
+  wifi_signal="$(wifi_link_value signal)"
+  wifi_tx_bitrate="$(wifi_link_value tx_bitrate)"
+  wifi_reason="$(wifi_status_reason "$(jq -r '.network.wifi_client.enabled' "${ACTIVE_SETTINGS}")" "${wifi_present}" "${wifi_configured_ssid}" "${wifi_service_active}" "${wifi_wpa_state}" "${wifi_ssid}" "${wifi_addr}" "${wifi_internet}")"
   cellular_state='{"enabled":false,"present":false,"backend":"qmi","interface":"wwan0","control_device":"/dev/cdc-wdm0","modem_manufacturer":"","modem_model":"","modem_revision":"","sim_status":"unknown","operator":"","signal_dbm":0,"signal_percent":0,"registration_state":"unknown","registered":false,"roaming":false,"access_technology":"","connected":false,"address":"","gateway":"","dns":[],"internet_ok":false,"rx_bytes":0,"tx_bytes":0,"session_rx_bytes":0,"session_tx_bytes":0,"last_connect_timestamp":"","last_disconnect_timestamp":"","last_error":""}'
   [ -f "${CELLULAR_STATE_FILE}" ] && cellular_state="$(cat "${CELLULAR_STATE_FILE}")"
   cellular_retry_state='{"last_attempt_timestamp":"","last_attempt_epoch":0,"next_attempt_epoch":0,"attempt_count":0,"last_result":"","last_reason":""}'
@@ -764,12 +838,32 @@ write_state_snapshot() {
   "wifi_client": {
     "interface": "wlan0",
     "enabled": $(jq -r '.network.wifi_client.enabled' "${ACTIVE_SETTINGS}"),
+    "configured_ssid": $(json_escape "${wifi_configured_ssid}"),
+    "hidden_ssid": $(bool_json "${wifi_hidden}"),
+    "security": $(json_escape "${wifi_security}"),
+    "band": $(json_escape "${wifi_band}"),
+    "country_code": $(json_escape "${wifi_country}"),
+    "dhcp": $(bool_json "${wifi_dhcp}"),
+    "route_metric": ${wifi_metric},
     "present": $(bool_json "${wifi_present}"),
     "link_up": $(bool_json "${wifi_link}"),
     "interface_up": $(bool_json "${wifi_up}"),
     "address": $(json_escape "${wifi_addr}"),
     "connected_ssid": $(json_escape "${wifi_ssid}"),
-    "internet_ok": $(bool_json "${wifi_internet}")
+    "internet_ok": $(bool_json "${wifi_internet}"),
+    "diagnostics": {
+      "reason": $(json_escape "${wifi_reason}"),
+      "ap_mode_enabled": $(bool_json "${wifi_ap_enabled}"),
+      "supplicant_active": $(bool_json "${wifi_service_active}"),
+      "supplicant_enabled": $(bool_json "${wifi_service_enabled}"),
+      "supplicant_state": $(json_escape "${wifi_wpa_state}"),
+      "supplicant_ssid": $(json_escape "${wifi_wpa_ssid}"),
+      "supplicant_bssid": $(json_escape "${wifi_wpa_bssid}"),
+      "connected_bssid": $(json_escape "${wifi_bssid}"),
+      "frequency_mhz": $(json_escape "${wifi_freq}"),
+      "signal_dbm": $(json_escape "${wifi_signal}"),
+      "tx_bitrate": $(json_escape "${wifi_tx_bitrate}")
+    }
   },
   "wifi_ap": {
     "interface": "wlan0",
@@ -916,6 +1010,7 @@ main_loop() {
   local cellular_ready cellular_fail cellular_eligible cellular_last cellular_internet
   local previous_pending recovery_reason last_apply_at last_summary_epoch
   local previous_cellular_key cellular_key cellular_summary
+  local wifi_summary_reason
   local last_tailscale_health_epoch
 
   last_summary_epoch=0
@@ -1065,7 +1160,8 @@ main_loop() {
 
     if [ $((now - last_summary_epoch)) -ge "${SUMMARY_INTERVAL}" ]; then
       cellular_summary="$(cellular_status_text | sed 's/^cellular state //')"
-      log "summary active=${active} active_duration=$(stats_value '.active_duration_seconds // 0')s network_down=$(stats_value '.network.current_down_seconds // 0')s last_switch_duration=$(stats_value '.last_switch.duration_seconds // 0')s eth0(eligible=${eth0_eligible},internet=${eth0_internet},fail=${eth0_fail},down=$(stats_value '.interfaces.eth0.current_down_seconds // 0')s,addr=$(interface_addr eth0)) eth1(eligible=${eth1_eligible},internet=${eth1_internet},fail=${eth1_fail},down=$(stats_value '.interfaces.eth1.current_down_seconds // 0')s,addr=$(interface_addr eth1)) wifi(eligible=${wifi_eligible},internet=${wifi_internet},fail=${wifi_fail},down=$(stats_value '.interfaces.wifi_client.current_down_seconds // 0')s,addr=$(interface_addr wlan0)) cellular(eligible=${cellular_eligible},internet=${cellular_internet},fail=${cellular_fail},down=$(stats_value '.interfaces.cellular.current_down_seconds // 0')s,${cellular_summary})"
+      wifi_summary_reason="$(wifi_status_reason "${wifi_enabled}" "$(ip link show wlan0 >/dev/null 2>&1 && printf true || printf false)" "$(jq -r '.network.wifi_client.ssid // ""' "${ACTIVE_SETTINGS}")" "$(service_active "wpa_supplicant@wlan0.service" && printf true || printf false)" "$(wpa_status_value wpa_state)" "$(iw dev wlan0 link 2>/dev/null | awk -F': ' '/SSID:/ {print $2; exit}')" "$(interface_addr wlan0)" "${wifi_internet}")"
+      log "summary active=${active} active_duration=$(stats_value '.active_duration_seconds // 0')s network_down=$(stats_value '.network.current_down_seconds // 0')s last_switch_duration=$(stats_value '.last_switch.duration_seconds // 0')s eth0(eligible=${eth0_eligible},internet=${eth0_internet},fail=${eth0_fail},down=$(stats_value '.interfaces.eth0.current_down_seconds // 0')s,addr=$(interface_addr eth0)) eth1(eligible=${eth1_eligible},internet=${eth1_internet},fail=${eth1_fail},down=$(stats_value '.interfaces.eth1.current_down_seconds // 0')s,addr=$(interface_addr eth1)) wifi(eligible=${wifi_eligible},internet=${wifi_internet},fail=${wifi_fail},down=$(stats_value '.interfaces.wifi_client.current_down_seconds // 0')s,reason=${wifi_summary_reason},addr=$(interface_addr wlan0)) cellular(eligible=${cellular_eligible},internet=${cellular_internet},fail=${cellular_fail},down=$(stats_value '.interfaces.cellular.current_down_seconds // 0')s,${cellular_summary})"
       last_summary_epoch="${now}"
     fi
 
