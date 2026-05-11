@@ -144,11 +144,27 @@ serving_system() {
 signal_dbm() {
   local device="$1" output dbm
   output="$(qmi "${device}" --nas-get-signal-strength 2>&1 || true)"
-  dbm="$(printf '%s\n' "${output}" | awk -F"'" '/Current:/ {print $2; exit}' | awk '{print $1}')"
+  dbm="$(printf '%s\n' "${output}" | awk -F"'" '
+    /Current:/ && $2 ~ /^-?[0-9]+ dBm/ {
+      split($2, a, " ")
+      print a[1]
+      exit
+    }
+    /Network .*dBm/ && $4 ~ /^-?[0-9]+ dBm/ {
+      split($4, a, " ")
+      print a[1]
+      exit
+    }
+    /RSSI:/ && $2 ~ /^-?[0-9]+ dBm/ {
+      split($2, a, " ")
+      print a[1]
+      exit
+    }
+  ')"
   if printf '%s' "${dbm}" | grep -Eq '^-?[0-9]+$'; then
     printf '%s\n' "${dbm}"
   else
-    printf '0\n'
+    printf -- '-110\n'
   fi
 }
 
@@ -189,7 +205,17 @@ modem_revision() {
 
 operator_name() {
   local serving="$1"
-  printf '%s\n' "${serving}" | awk -F"'" '/Current PLMN:/ {print $2; exit}'
+  printf '%s\n' "${serving}" | awk -F"'" '
+    /Current PLMN:/ { in_plmn = 1; next }
+    in_plmn && /Description:/ { print $2; found = 1; exit }
+    in_plmn && /MCC:/ { mcc = $2 }
+    in_plmn && /MNC:/ { mnc = $2 }
+    END {
+      if (!found && (mcc != "" || mnc != "")) {
+        printf "MCC %s MNC %s", mcc, mnc
+      }
+    }
+  '
 }
 
 registration_state() {
@@ -209,8 +235,15 @@ registered_state() {
 access_technology() {
   local serving="$1"
   printf '%s\n' "${serving}" | awk -F"'" '
-    /Radio interfaces:/ {print $2; exit}
-    /Data service capabilities:/ {print $2; exit}
+    /Radio interfaces:/ { in_radio = 1; next }
+    in_radio && /\[[0-9]+\]:/ { print $2; found = 1; exit }
+    /Data service capabilities:/ { in_data = 1; next }
+    in_data && /\[[0-9]+\]:/ { print $2; found = 1; exit }
+    END {
+      if (!found) {
+        print ""
+      }
+    }
   '
 }
 
@@ -357,6 +390,22 @@ set_iface_metric() {
   local iface="$1" new_metric="$2" routes gateway
   routes="$(ip -4 route show default dev "${iface}" || true)"
   [ -n "${routes}" ] || return 0
+  if printf '%s\n' "${routes}" | awk -v desired="${new_metric}" '
+    {
+      metric = "0"
+      for (i = 1; i <= NF; i++) {
+        if ($i == "metric") {
+          metric = $(i + 1)
+        }
+      }
+      if (metric == desired) {
+        found = 1
+      }
+    }
+    END { exit found ? 0 : 1 }
+  '; then
+    return 0
+  fi
   gateway="$(printf '%s\n' "${routes}" | awk '{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1);exit}}')"
   while ip -4 route del default dev "${iface}" >/dev/null 2>&1; do :; done
   if [ -n "${gateway}" ]; then

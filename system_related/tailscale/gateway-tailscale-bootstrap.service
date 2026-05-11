@@ -9,8 +9,7 @@ Type=oneshot
 EnvironmentFile=/opt/gateway/secrets/tailscale.env
 ExecStart=/opt/gateway/scripts/gateway-tailscale-bootstrap.sh
 RemainAfterExit=yes
-Restart=on-failure
-RestartSec=30
+TimeoutStartSec=10min
 
 [Install]
 WantedBy=multi-user.target
