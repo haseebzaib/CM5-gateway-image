@@ -1,0 +1,14 @@
+[Unit]
+Description=Zero Axis gateway grow root filesystem
+After=local-fs.target systemd-udev-settle.service
+Before=gateway-startup.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/gateway/scripts/gateway-grow-rootfs.sh
+RemainAfterExit=yes
+TimeoutStartSec=3min
+
+[Install]
+WantedBy=multi-user.target

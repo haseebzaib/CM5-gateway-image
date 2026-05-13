@@ -7,7 +7,7 @@
 #   - Triggers gateway-network-apply on config change or recovery
 #   - Does NOT manage eth0/eth1 interface state — those are permanently up
 #
-set -euo pipefail
+set -Eeuo pipefail
 
 LOG_TAG="gateway-network-monitor"
 BASE_DIR="/opt/gateway"
@@ -37,9 +37,11 @@ TAILSCALE_RECOVERY_COOLDOWN=180
 TAILSCALE_HEALTH_INTERVAL=60
 
 log() {
-  logger -t "${LOG_TAG}" "$*"
+  logger -t "${LOG_TAG}" "$*" || true
   printf '%s\n' "$*"
 }
+
+trap 'rc=$?; log "fatal monitor error rc=${rc} line=${LINENO} command=${BASH_COMMAND}"' ERR
 
 json_escape() {
   printf '%s' "$1" | jq -Rsa .
@@ -50,7 +52,38 @@ write_json_file() {
   local tmp
   tmp="$(mktemp "${target}.tmp.XXXXXX")"
   cat > "${tmp}"
+  chmod 0644 "${tmp}"
   mv "${tmp}" "${target}"
+}
+
+safe_int() {
+  local value="$1" fallback="${2:-0}"
+  if printf '%s' "${value}" | grep -Eq '^-?[0-9]+$'; then
+    printf '%s\n' "${value}"
+  else
+    printf '%s\n' "${fallback}"
+  fi
+}
+
+safe_bool() {
+  local value="$1" fallback="${2:-false}"
+  case "${value}" in
+    true|false) printf '%s\n' "${value}" ;;
+    *) printf '%s\n' "${fallback}" ;;
+  esac
+}
+
+json_file_value() {
+  local file="$1" expr="$2" fallback="${3:-}" value
+  value=""
+  if [ -f "${file}" ] && jq empty "${file}" >/dev/null 2>&1; then
+    value="$(jq -r "${expr}" "${file}" 2>/dev/null || true)"
+  fi
+  if [ -z "${value}" ] || [ "${value}" = "null" ]; then
+    printf '%s\n' "${fallback}"
+  else
+    printf '%s\n' "${value}"
+  fi
 }
 
 ensure_runtime_files() {
@@ -135,24 +168,43 @@ EOF
 
 bool_json() { [ "$1" = "true" ] && printf true || printf false; }
 
-interface_up()   { ip -j link show "$1" 2>/dev/null | jq -r 'if length == 0 then false else (.[0].flags | index("UP") != null) end'; }
-interface_link() { ip -j link show "$1" 2>/dev/null | jq -r 'if length == 0 then false else .[0].operstate == "UP" end'; }
-interface_addr() { ip -4 -o addr show dev "$1" 2>/dev/null | awk '{print $4}' | head -n1; }
+interface_up() {
+  local output
+  output="$(ip -j link show "$1" 2>/dev/null || printf '[]')"
+  printf '%s\n' "${output}" | jq -r 'if length == 0 then false else (.[0].flags | index("UP") != null) end'
+}
+
+interface_link() {
+  local output
+  output="$(ip -j link show "$1" 2>/dev/null || printf '[]')"
+  printf '%s\n' "${output}" | jq -r 'if length == 0 then false else .[0].operstate == "UP" end'
+}
+
+interface_addr() {
+  ip -4 -o addr show dev "$1" 2>/dev/null | awk '{print $4}' | head -n1 || true
+}
 
 unit_enabled() {
   systemctl is-enabled --quiet "$1" >/dev/null 2>&1 && printf true || printf false
 }
 
 wpa_status_value() {
-  local field="$1"
+  local field="$1" output
   command -v wpa_cli >/dev/null 2>&1 || return 0
-  wpa_cli -i wlan0 status 2>/dev/null | awk -F= -v field="${field}" '$1 == field {print $2; exit}'
+  output="$(wpa_cli -i wlan0 status 2>/dev/null || true)"
+  printf '%s\n' "${output}" | awk -F= -v field="${field}" '$1 == field {print $2; exit}'
 }
 
 wifi_link_value() {
-  local field="$1"
-  iw dev wlan0 link 2>/dev/null | awk -v field="${field}" '
+  local field="$1" output
+  output="$(iw dev wlan0 link 2>/dev/null || true)"
+  printf '%s\n' "${output}" | awk -v field="${field}" '
     field == "bssid" && /^Connected to / { print $3; exit }
+    field == "ssid" && /^[[:space:]]*SSID:/ {
+      sub(/^[[:space:]]*SSID:[[:space:]]*/, "")
+      print
+      exit
+    }
     field == "freq" && /^[[:space:]]*freq:/ { print $2; exit }
     field == "signal" && /^[[:space:]]*signal:/ { print $2; exit }
     field == "tx_bitrate" && /^[[:space:]]*tx bitrate:/ {
@@ -193,7 +245,7 @@ wifi_status_reason() {
 }
 
 load_connectivity_targets() {
-  mapfile -t CONNECTIVITY_TARGETS < <(jq -r '.network.uplink.connectivity_targets[]? // empty' "${ACTIVE_SETTINGS}")
+  mapfile -t CONNECTIVITY_TARGETS < <(jq -r '.network.uplink.connectivity_targets[]? // empty' "${ACTIVE_SETTINGS}" 2>/dev/null || true)
   if [ "${#CONNECTIVITY_TARGETS[@]}" -eq 0 ]; then
     CONNECTIVITY_TARGETS=("1.1.1.1" "8.8.8.8")
   fi
@@ -204,6 +256,16 @@ cellular_state_json() {
     cat "${CELLULAR_STATE_FILE}"
   else
     printf '{}\n'
+  fi
+}
+
+cellular_value() {
+  local expr="$1" fallback="$2" value
+  value="$(cellular_state_json | jq -r "${expr}" 2>/dev/null || true)"
+  if [ -z "${value}" ] || [ "${value}" = "null" ]; then
+    printf '%s\n' "${fallback}"
+  else
+    printf '%s\n' "${value}"
   fi
 }
 
@@ -221,7 +283,7 @@ cellular_state_key() {
       (.internet_ok // false),
       (.last_error // "")
     ] | @tsv
-  '
+  ' 2>/dev/null || printf 'false\tfalse\tunknown\t\t0\tfalse\tfalse\t\tfalse\t\n'
 }
 
 cellular_status_text() {
@@ -236,7 +298,7 @@ cellular_status_text() {
     " address=\(.address // "")" +
     " internet=\(.internet_ok // false)" +
     " error=\((.last_error // "") | gsub("[\r\n]+"; " ") | .[0:180])"
-  '
+  ' 2>/dev/null || printf 'cellular state enabled=false present=false sim=unknown operator= signal=0 registered=false connected=false address= internet=false error=state_unreadable\n'
 }
 
 log_cellular_state_if_changed() {
@@ -271,12 +333,12 @@ internet_ok() {
 
 priority_for() {
   local target="$1"
-  jq -r --arg t "${target}" '
+  safe_int "$(jq -r --arg t "${target}" '
     .network.uplink.uplink_priority
     | to_entries
     | map(select(.value == $t))
     | if length == 0 then 999 else (.[0].key + 1) end
-  ' "${ACTIVE_SETTINGS}"
+  ' "${ACTIVE_SETTINGS}" 2>/dev/null || printf 999)" 999
 }
 
 effective_ready() {
@@ -288,14 +350,15 @@ effective_ready() {
   if [ "${require_check}" = "true" ]; then internet_ok "${iface}"; else return 0; fi
 }
 
-monitor_value()   { jq -r "$1" "${MONITOR_STATE_FILE}"; }
-stats_value() { jq -r "$1" "${UPLINK_STATS_FILE}"; }
-recovery_value()  { jq -r "$1" "${RECOVERY_STATE_FILE}"; }
-cellular_retry_value() { jq -r "$1" "${CELLULAR_RETRY_STATE_FILE}"; }
-tailscale_recovery_value() { jq -r "$1" "${TAILSCALE_RECOVERY_STATE_FILE}"; }
+monitor_value() { json_file_value "${MONITOR_STATE_FILE}" "$1" ""; }
+stats_value() { json_file_value "${UPLINK_STATS_FILE}" "$1" ""; }
+recovery_value() { json_file_value "${RECOVERY_STATE_FILE}" "$1" ""; }
+cellular_retry_value() { json_file_value "${CELLULAR_RETRY_STATE_FILE}" "$1" ""; }
+tailscale_recovery_value() { json_file_value "${TAILSCALE_RECOVERY_STATE_FILE}" "$1" ""; }
+settings_value() { json_file_value "${ACTIVE_SETTINGS}" "$1" "$2"; }
 
 last_apply_epoch() {
-  [ -f "${RESULT_FILE}" ] && stat -c %Y "${RESULT_FILE}" 2>/dev/null || printf '0\n'
+  safe_int "$([ -f "${RESULT_FILE}" ] && stat -c %Y "${RESULT_FILE}" 2>/dev/null || printf '0\n')" 0
 }
 
 write_recovery_state() {
@@ -318,6 +381,9 @@ EOF
 write_cellular_retry_state() {
   local last_epoch="$1" next_epoch="$2" attempt_count="$3" result="$4" reason="$5"
   local timestamp
+  last_epoch="$(safe_int "${last_epoch}" 0)"
+  next_epoch="$(safe_int "${next_epoch}" 0)"
+  attempt_count="$(safe_int "${attempt_count}" 0)"
   timestamp=""
   [ "${last_epoch}" -gt 0 ] && timestamp="$(date --date="@${last_epoch}" --iso-8601=seconds 2>/dev/null || date --iso-8601=seconds)"
   write_json_file "${CELLULAR_RETRY_STATE_FILE}" <<EOF
@@ -338,6 +404,7 @@ reset_cellular_retry_state() {
 
 epoch_to_iso() {
   local epoch="$1"
+  epoch="$(safe_int "${epoch}" 0)"
   [ "${epoch}" -gt 0 ] || { printf ''; return 0; }
   date --date="@${epoch}" --iso-8601=seconds 2>/dev/null || date --iso-8601=seconds
 }
@@ -353,6 +420,12 @@ interface_timing_json() {
   prev_last_duration="$(stats_value ".interfaces[\"${key}\"].last_down_duration_seconds // 0")"
   prev_last_up="$(stats_value ".interfaces[\"${key}\"].last_up_timestamp // \"\"")"
   prev_last_down="$(stats_value ".interfaces[\"${key}\"].last_down_timestamp // \"\"")"
+
+  prev_down_since="$(safe_int "${prev_down_since}" 0)"
+  prev_total="$(safe_int "${prev_total}" 0)"
+  prev_events="$(safe_int "${prev_events}" 0)"
+  prev_last_duration="$(safe_int "${prev_last_duration}" 0)"
+  now="$(safe_int "${now}" "$(date +%s)")"
 
   down_since="${prev_down_since}"
   current_down=0
@@ -442,6 +515,14 @@ update_uplink_stats() {
   prev_network_events="$(stats_value '.network.down_events // 0')"
   prev_network_last_duration="$(stats_value '.network.last_down_duration_seconds // 0')"
 
+  prev_active_since="$(safe_int "${prev_active_since}" 0)"
+  prev_started_epoch="$(safe_int "${prev_started_epoch}" 0)"
+  prev_switch_count="$(safe_int "${prev_switch_count}" 0)"
+  prev_network_down_since="$(safe_int "${prev_network_down_since}" 0)"
+  prev_network_total="$(safe_int "${prev_network_total}" 0)"
+  prev_network_events="$(safe_int "${prev_network_events}" 0)"
+  prev_network_last_duration="$(safe_int "${prev_network_last_duration}" 0)"
+
   [ "${prev_started_epoch}" -gt 0 ] || prev_started_epoch="${now}"
   [ -n "${prev_started_timestamp}" ] || prev_started_timestamp="$(epoch_to_iso "${now}")"
 
@@ -474,7 +555,7 @@ update_uplink_stats() {
 
   active_since="${prev_active_since}"
   switch_count="${prev_switch_count}"
-  last_switch_json="$(jq -c '.last_switch // {"from":"none","to":"none","started_epoch":0,"completed_epoch":0,"duration_seconds":0,"reason":""}' "${UPLINK_STATS_FILE}")"
+  last_switch_json="$(json_file_value "${UPLINK_STATS_FILE}" '.last_switch // {"from":"none","to":"none","started_epoch":0,"completed_epoch":0,"duration_seconds":0,"reason":""}' '{"from":"none","to":"none","started_epoch":0,"completed_epoch":0,"duration_seconds":0,"reason":""}')"
 
   if [ "${active}" != "${prev_active}" ]; then
     active_since="${now}"
@@ -553,8 +634,7 @@ update_uplink_stats() {
         wifi_client: $wifi,
         cellular: $cellular
       }
-    }' > "${UPLINK_STATS_FILE}.tmp"
-  mv "${UPLINK_STATS_FILE}.tmp" "${UPLINK_STATS_FILE}"
+    }' | write_json_file "${UPLINK_STATS_FILE}"
 }
 
 write_tailscale_recovery_state() {
@@ -599,8 +679,8 @@ sample_uplink() {
   local key="$1" iface="$2" enabled="$3" require_check="$4" fail_threshold="$5" recover_threshold="$6"
   local ready_count fail_count current_ready eligible internet_state
 
-  ready_count="$(monitor_value ".uplinks[\"${key}\"].ready_count // 0")"
-  fail_count="$(monitor_value ".uplinks[\"${key}\"].fail_count // 0")"
+  ready_count="$(safe_int "$(monitor_value ".uplinks[\"${key}\"].ready_count // 0")" 0)"
+  fail_count="$(safe_int "$(monitor_value ".uplinks[\"${key}\"].fail_count // 0")" 0)"
   current_ready="false"
   internet_state="false"
 
@@ -650,9 +730,9 @@ set_iface_metric() {
 apply_route_preference() {
   local active="$1"
   local wifi_metric cellular_metric
-  wifi_metric="$(jq -r '.network.wifi_client.route_metric' "${ACTIVE_SETTINGS}")"
-  cellular_metric="$(jq -r '.network.cellular as $c | ((($c.modems // []) | map(select(.id == ($c.active_modem_id // "sim7600"))) | first | .route_metric) // 500)' "${ACTIVE_SETTINGS}" 2>/dev/null)"
-  cellular_metric="${cellular_metric:-500}"
+  wifi_metric="$(safe_int "$(settings_value '.network.wifi_client.route_metric // 300' 300)" 300)"
+  cellular_metric="$(settings_value '.network.cellular as $c | ((($c.modems // []) | map(select(.id == ($c.active_modem_id // "sim7600"))) | first | .route_metric) // 500)' 500)"
+  cellular_metric="$(safe_int "${cellular_metric:-500}" 500)"
 
   # Give active interface the lowest metric (10 = strongly preferred).
   # Non-active eth0/eth1 keep higher metrics for fallback.
@@ -702,15 +782,18 @@ write_state_snapshot() {
   local cellular_state cellular_retry_state cellular_for_state uplink_stats active_interface
   local tailscale_trigger_count tailscale_trigger_reason tailscale_trigger_timestamp
 
-  current_apply_result='{}'; [ -f "${RESULT_FILE}" ] && current_apply_result="$(cat "${RESULT_FILE}")"
+  current_apply_result='{}'
+  if [ -f "${RESULT_FILE}" ] && jq empty "${RESULT_FILE}" >/dev/null 2>&1; then
+    current_apply_result="$(cat "${RESULT_FILE}")"
+  fi
   uplink_stats='{}'
   if [ -f "${UPLINK_STATS_FILE}" ] && jq empty "${UPLINK_STATS_FILE}" >/dev/null 2>&1; then
     uplink_stats="$(cat "${UPLINK_STATS_FILE}")"
   fi
-  recovery_count="$(recovery_value '.recovery_count // 0')"
+  recovery_count="$(safe_int "$(recovery_value '.recovery_count // 0')" 0)"
   recovery_reason="$(recovery_value '.last_recovery_reason // ""')"
   recovery_timestamp="$(recovery_value '.last_recovery_timestamp // ""')"
-  tailscale_trigger_count="$(tailscale_recovery_value '.trigger_count // 0')"
+  tailscale_trigger_count="$(safe_int "$(tailscale_recovery_value '.trigger_count // 0')" 0)"
   tailscale_trigger_reason="$(tailscale_recovery_value '.last_reason // ""')"
   tailscale_trigger_timestamp="$(tailscale_recovery_value '.last_trigger_timestamp // ""')"
   case "${active}" in
@@ -736,21 +819,21 @@ write_state_snapshot() {
     wifi_up="$(interface_up wlan0)"
     wifi_link="$(interface_link wlan0)"
     wifi_addr="$(interface_addr wlan0)"
-    wifi_ssid="$(iw dev wlan0 link 2>/dev/null | awk -F': ' '/SSID:/ {print $2; exit}')"
+    wifi_ssid="$(wifi_link_value ssid)"
     ap_clients="$(iw dev wlan0 station dump 2>/dev/null | grep -c '^Station' || true)"
     wifi_internet="$(monitor_value '.uplinks["wifi_client"].internet_ok // false')"
   else
     wifi_present="false"; wifi_up="false"; wifi_link="false"
     wifi_addr=""; wifi_ssid=""; ap_clients=0; wifi_internet="false"
   fi
-  wifi_configured_ssid="$(jq -r '.network.wifi_client.ssid // ""' "${ACTIVE_SETTINGS}")"
-  wifi_hidden="$(jq -r '.network.wifi_client.hidden_ssid // false' "${ACTIVE_SETTINGS}")"
-  wifi_security="$(jq -r '.network.wifi_client.security // ""' "${ACTIVE_SETTINGS}")"
-  wifi_band="$(jq -r '.network.wifi_client.band // ""' "${ACTIVE_SETTINGS}")"
-  wifi_country="$(jq -r '.network.wifi_client.country_code // ""' "${ACTIVE_SETTINGS}")"
-  wifi_dhcp="$(jq -r '.network.wifi_client.dhcp // true' "${ACTIVE_SETTINGS}")"
-  wifi_metric="$(jq -r '.network.wifi_client.route_metric // 300' "${ACTIVE_SETTINGS}")"
-  wifi_ap_enabled="$(jq -r '.network.wifi_ap.enabled // false' "${ACTIVE_SETTINGS}")"
+  wifi_configured_ssid="$(settings_value '.network.wifi_client.ssid // ""' "")"
+  wifi_hidden="$(safe_bool "$(settings_value '.network.wifi_client.hidden_ssid // false' false)" false)"
+  wifi_security="$(settings_value '.network.wifi_client.security // ""' "")"
+  wifi_band="$(settings_value '.network.wifi_client.band // ""' "")"
+  wifi_country="$(settings_value '.network.wifi_client.country_code // ""' "")"
+  wifi_dhcp="$(safe_bool "$(settings_value '.network.wifi_client.dhcp // true' true)" true)"
+  wifi_metric="$(safe_int "$(settings_value '.network.wifi_client.route_metric // 300' 300)" 300)"
+  wifi_ap_enabled="$(safe_bool "$(settings_value '.network.wifi_ap.enabled // false' false)" false)"
   service_active "wpa_supplicant@wlan0.service" && wifi_service_active="true" || wifi_service_active="false"
   wifi_service_enabled="$(unit_enabled "wpa_supplicant@wlan0.service")"
   wifi_wpa_state="$(wpa_status_value wpa_state)"
@@ -760,11 +843,15 @@ write_state_snapshot() {
   wifi_freq="$(wifi_link_value freq)"
   wifi_signal="$(wifi_link_value signal)"
   wifi_tx_bitrate="$(wifi_link_value tx_bitrate)"
-  wifi_reason="$(wifi_status_reason "$(jq -r '.network.wifi_client.enabled' "${ACTIVE_SETTINGS}")" "${wifi_present}" "${wifi_configured_ssid}" "${wifi_service_active}" "${wifi_wpa_state}" "${wifi_ssid}" "${wifi_addr}" "${wifi_internet}")"
+  wifi_reason="$(wifi_status_reason "$(safe_bool "$(settings_value '.network.wifi_client.enabled // false' false)" false)" "${wifi_present}" "${wifi_configured_ssid}" "${wifi_service_active}" "${wifi_wpa_state}" "${wifi_ssid}" "${wifi_addr}" "${wifi_internet}")"
   cellular_state='{"enabled":false,"present":false,"backend":"qmi","interface":"wwan0","control_device":"/dev/cdc-wdm0","modem_manufacturer":"","modem_model":"","modem_revision":"","sim_status":"unknown","operator":"","signal_dbm":0,"signal_percent":0,"registration_state":"unknown","registered":false,"roaming":false,"access_technology":"","connected":false,"address":"","gateway":"","dns":[],"internet_ok":false,"rx_bytes":0,"tx_bytes":0,"session_rx_bytes":0,"session_tx_bytes":0,"last_connect_timestamp":"","last_disconnect_timestamp":"","last_error":""}'
-  [ -f "${CELLULAR_STATE_FILE}" ] && cellular_state="$(cat "${CELLULAR_STATE_FILE}")"
+  if [ -f "${CELLULAR_STATE_FILE}" ] && jq empty "${CELLULAR_STATE_FILE}" >/dev/null 2>&1; then
+    cellular_state="$(cat "${CELLULAR_STATE_FILE}")"
+  fi
   cellular_retry_state='{"last_attempt_timestamp":"","last_attempt_epoch":0,"next_attempt_epoch":0,"attempt_count":0,"last_result":"","last_reason":""}'
-  [ -f "${CELLULAR_RETRY_STATE_FILE}" ] && cellular_retry_state="$(cat "${CELLULAR_RETRY_STATE_FILE}")"
+  if [ -f "${CELLULAR_RETRY_STATE_FILE}" ] && jq empty "${CELLULAR_RETRY_STATE_FILE}" >/dev/null 2>&1; then
+    cellular_retry_state="$(cat "${CELLULAR_RETRY_STATE_FILE}")"
+  fi
   cellular_for_state="$(printf '%s' "${cellular_state}" | jq -c --argjson retry "${cellular_retry_state}" '{
     enabled: (.enabled // false),
     present: (.present // false),
@@ -802,7 +889,7 @@ write_state_snapshot() {
       last_result: ($retry.last_result // ""),
       last_reason: ($retry.last_reason // "")
     }
-  }')"
+  }' 2>/dev/null || printf '%s\n' "${cellular_state}")"
 
   write_json_file "${STATE_FILE}" <<EOF
 {
@@ -837,7 +924,7 @@ write_state_snapshot() {
   },
   "wifi_client": {
     "interface": "wlan0",
-    "enabled": $(jq -r '.network.wifi_client.enabled' "${ACTIVE_SETTINGS}"),
+    "enabled": $(bool_json "$(safe_bool "$(settings_value '.network.wifi_client.enabled // false' false)" false)"),
     "configured_ssid": $(json_escape "${wifi_configured_ssid}"),
     "hidden_ssid": $(bool_json "${wifi_hidden}"),
     "security": $(json_escape "${wifi_security}"),
@@ -867,7 +954,7 @@ write_state_snapshot() {
   },
   "wifi_ap": {
     "interface": "wlan0",
-    "enabled": $(jq -r '.network.wifi_ap.enabled' "${ACTIVE_SETTINGS}"),
+    "enabled": $(bool_json "${wifi_ap_enabled}"),
     "address": $(json_escape "${wifi_addr}"),
     "clients": ${ap_clients}
   },
@@ -882,6 +969,8 @@ attempt_runtime_recovery() {
   local reason="$1" now="$2" last_epoch recovery_count
   last_epoch="$(recovery_value '.last_recovery_epoch // 0')"
   recovery_count="$(recovery_value '.recovery_count // 0')"
+  last_epoch="$(safe_int "${last_epoch}" 0)"
+  recovery_count="$(safe_int "${recovery_count}" 0)"
   [ $((now - last_epoch)) -lt "${RECOVERY_COOLDOWN}" ] && return 0
   recovery_count=$((recovery_count + 1))
   log "runtime recovery triggered: ${reason}"
@@ -890,13 +979,20 @@ attempt_runtime_recovery() {
 }
 
 trigger_tailscale_recovery() {
-  local reason="$1" now="$2" last_epoch trigger_count
+  local reason="$1" now="$2" last_epoch trigger_count unit_sub_state
   command -v tailscale >/dev/null 2>&1 || return 0
   systemctl list-unit-files "${TAILSCALE_BOOTSTRAP_SERVICE}" >/dev/null 2>&1 || return 0
-  systemctl is-active --quiet "${TAILSCALE_BOOTSTRAP_SERVICE}" && return 0
+  unit_sub_state="$(systemctl show -p SubState --value "${TAILSCALE_BOOTSTRAP_SERVICE}" 2>/dev/null || true)"
+  case "${unit_sub_state}" in
+    start|start-pre|start-post|reload|reload-signal)
+      return 0
+      ;;
+  esac
 
   last_epoch="$(tailscale_recovery_value '.last_trigger_epoch // 0')"
   trigger_count="$(tailscale_recovery_value '.trigger_count // 0')"
+  last_epoch="$(safe_int "${last_epoch}" 0)"
+  trigger_count="$(safe_int "${trigger_count}" 0)"
   [ $((now - last_epoch)) -lt "${TAILSCALE_RECOVERY_COOLDOWN}" ] && return 0
 
   trigger_count=$((trigger_count + 1))
@@ -927,14 +1023,16 @@ tailscale_funnel_healthy() {
   funnel_enabled="$(tailscale_env_value TS_FUNNEL_ENABLE true)"
   [ "${funnel_enabled}" = "true" ] || return 0
   funnel_port="$(tailscale_env_value TS_FUNNEL_PORT 8000)"
-  tailscale status >/dev/null 2>&1 || return 1
-  status="$(tailscale funnel status 2>/dev/null || true)"
+  timeout 20s tailscale status >/dev/null 2>&1 || return 1
+  status="$(timeout 20s tailscale funnel status 2>/dev/null || true)"
   printf '%s\n' "${status}" | grep -q 'Funnel on' || return 1
   printf '%s\n' "${status}" | grep -Eq "proxy http://127\\.0\\.0\\.1:${funnel_port}(/|$|[[:space:]])" || return 1
 }
 
 maybe_recover_tailscale_funnel() {
   local active="$1" now="$2" last_check_var="$3"
+  now="$(safe_int "${now}" 0)"
+  last_check_var="$(safe_int "${last_check_var}" 0)"
   [ "${active}" != "none" ] || return 0
   [ $((now - last_check_var)) -ge "${TAILSCALE_HEALTH_INTERVAL}" ] || return 0
   if ! tailscale_funnel_healthy; then
@@ -946,18 +1044,18 @@ cellular_connect_blocker() {
   local cellular_enabled="$1"
   local apn sim_status present connected
   [ "${cellular_enabled}" = "true" ] || { printf 'disabled\n'; return 0; }
-  apn="$(jq -r '.network.cellular.apn // ""' "${ACTIVE_SETTINGS}")"
+  apn="$(settings_value '.network.cellular.apn // ""' "")"
   [ -n "${apn}" ] || { printf 'apn_missing\n'; return 0; }
-  present="$(cellular_state_json | jq -r '.present // false')"
+  present="$(safe_bool "$(cellular_value '.present // false' false)" false)"
   [ "${present}" = "true" ] || { printf 'modem_missing\n'; return 0; }
-  sim_status="$(cellular_state_json | jq -r '.sim_status // "unknown"')"
+  sim_status="$(cellular_value '.sim_status // "unknown"' unknown)"
   case "${sim_status}" in
     ready|present) ;;
     locked) printf 'sim_locked\n'; return 0 ;;
     missing) printf 'sim_missing\n'; return 0 ;;
     *) printf "sim_${sim_status}\n"; return 0 ;;
   esac
-  connected="$(cellular_state_json | jq -r '.connected // false')"
+  connected="$(safe_bool "$(cellular_value '.connected // false' false)" false)"
   [ "${connected}" != "true" ] || { printf 'already_connected\n'; return 0; }
   printf '\n'
 }
@@ -979,6 +1077,10 @@ maybe_connect_cellular() {
   last_attempt="$(cellular_retry_value '.last_attempt_epoch // 0')"
   next_attempt="$(cellular_retry_value '.next_attempt_epoch // 0')"
   attempt_count="$(cellular_retry_value '.attempt_count // 0')"
+  last_attempt="$(safe_int "${last_attempt}" 0)"
+  next_attempt="$(safe_int "${next_attempt}" 0)"
+  attempt_count="$(safe_int "${attempt_count}" 0)"
+  now="$(safe_int "${now}" 0)"
   if [ "${next_attempt}" -gt "${now}" ]; then
     return 1
   fi
@@ -986,7 +1088,7 @@ maybe_connect_cellular() {
   attempt_count=$((attempt_count + 1))
   output="/tmp/gateway-network-monitor-cellular-connect.log"
   log "cellular connect attempt ${attempt_count}: requesting connect"
-  if "${CELLULARCTL}" connect >"${output}" 2>&1; then
+  if timeout 90s "${CELLULARCTL}" connect >"${output}" 2>&1; then
     write_cellular_retry_state "${now}" 0 0 "connected" ""
     log "cellular connect succeeded"
     return 0
@@ -1011,7 +1113,8 @@ main_loop() {
   local previous_pending recovery_reason last_apply_at last_summary_epoch
   local previous_cellular_key cellular_key cellular_summary
   local wifi_summary_reason
-  local last_tailscale_health_epoch
+  local last_tailscale_health_epoch uplink
+  local -a priority_list
 
   last_summary_epoch=0
   last_tailscale_health_epoch=0
@@ -1026,7 +1129,8 @@ main_loop() {
       continue
     fi
 
-    current_hash="$(sha256sum "${ACTIVE_SETTINGS}" | awk '{print $1}')"
+    current_hash="$(sha256sum "${ACTIVE_SETTINGS}" 2>/dev/null | awk '{print $1}' || true)"
+    [ -n "${current_hash}" ] || current_hash="settings_unreadable"
     LAST_HASH="$(monitor_value '.last_config_hash // ""')"
     if [ "${current_hash}" != "${LAST_HASH}" ]; then
       [ -n "${LAST_HASH}" ] && run_apply "settings changed"
@@ -1035,25 +1139,28 @@ main_loop() {
 
     load_connectivity_targets
 
-    require_check="$(jq -r '.network.uplink.require_connectivity_check' "${ACTIVE_SETTINGS}")"
-    stable_seconds="$(jq -r '.network.uplink.stable_seconds_before_switch' "${ACTIVE_SETTINGS}")"
-    failback_enabled="$(jq -r '.network.uplink.failback_enabled' "${ACTIVE_SETTINGS}")"
-    fail_threshold="$(jq -r '.network.uplink.fail_count_threshold // 1' "${ACTIVE_SETTINGS}")"
-    recover_threshold="$(jq -r '.network.uplink.recover_count_threshold // 1' "${ACTIVE_SETTINGS}")"
-    wifi_enabled="$(jq -r '.network.wifi_client.enabled' "${ACTIVE_SETTINGS}")"
-    cellular_enabled="$(jq -r '.network.cellular.enabled // false' "${ACTIVE_SETTINGS}")"
+    require_check="$(safe_bool "$(settings_value '.network.uplink.require_connectivity_check // true' true)" true)"
+    stable_seconds="$(safe_int "$(settings_value '.network.uplink.stable_seconds_before_switch // 5' 5)" 5)"
+    failback_enabled="$(safe_bool "$(settings_value '.network.uplink.failback_enabled // true' true)" true)"
+    fail_threshold="$(safe_int "$(settings_value '.network.uplink.fail_count_threshold // 1' 1)" 1)"
+    recover_threshold="$(safe_int "$(settings_value '.network.uplink.recover_count_threshold // 1' 1)" 1)"
+    wifi_enabled="$(safe_bool "$(settings_value '.network.wifi_client.enabled // false' false)" false)"
+    cellular_enabled="$(safe_bool "$(settings_value '.network.cellular.enabled // false' false)" false)"
+    [ "${stable_seconds}" -lt 0 ] && stable_seconds=0
+    [ "${fail_threshold}" -lt 1 ] && fail_threshold=1
+    [ "${recover_threshold}" -lt 1 ] && recover_threshold=1
     now="$(date +%s)"
 
     if [ -x "${CELLULARCTL}" ]; then
-      "${CELLULARCTL}" refresh-state >/dev/null 2>&1 || true
+      timeout 30s "${CELLULARCTL}" refresh-state >/dev/null 2>&1 || true
       cellular_key="$(cellular_state_key)"
       log_cellular_state_if_changed "${cellular_key}" "${previous_cellular_key}"
       previous_cellular_key="${cellular_key}"
-      if [ "${cellular_enabled}" != "true" ] || [ "$(cellular_state_json | jq -r '.connected // false')" = "true" ]; then
+      if [ "${cellular_enabled}" != "true" ] || [ "$(safe_bool "$(cellular_value '.connected // false' false)" false)" = "true" ]; then
         reset_cellular_retry_state
       else
         maybe_connect_cellular "${now}" "${cellular_enabled}" || true
-        "${CELLULARCTL}" refresh-state >/dev/null 2>&1 || true
+        timeout 30s "${CELLULARCTL}" refresh-state >/dev/null 2>&1 || true
         cellular_key="$(cellular_state_key)"
         log_cellular_state_if_changed "${cellular_key}" "${previous_cellular_key}"
         previous_cellular_key="${cellular_key}"
@@ -1070,20 +1177,24 @@ main_loop() {
     active="${previous_active}"
     pending="$(monitor_value '.pending_candidate // ""')"
     previous_pending="${pending}"
-    pending_since="$(monitor_value '.pending_since_epoch // 0')"
+    pending_since="$(safe_int "$(monitor_value '.pending_since_epoch // 0')" 0)"
     switch_started_for_stats="${pending_since}"
     last_switch_timestamp="$(monitor_value '.last_switch_timestamp // ""')"
 
     # Find best candidate from priority list
     candidate="none"
-    while read -r uplink; do
+    mapfile -t priority_list < <(jq -r '.network.uplink.uplink_priority[]? // empty' "${ACTIVE_SETTINGS}" 2>/dev/null || true)
+    if [ "${#priority_list[@]}" -eq 0 ]; then
+      priority_list=("eth0" "eth1" "wifi_client" "cellular")
+    fi
+    for uplink in "${priority_list[@]}"; do
       case "${uplink}" in
         eth0)        [ "${eth0_eligible}" = "true" ] && { candidate="eth0"; break; } ;;
         eth1)        [ "${eth1_eligible}" = "true" ] && { candidate="eth1"; break; } ;;
         wifi_client) [ "${wifi_eligible}" = "true" ] && { candidate="wifi_client"; break; } ;;
         cellular)    [ "${cellular_eligible}" = "true" ] && { candidate="cellular"; break; } ;;
       esac
-    done < <(jq -r '.network.uplink.uplink_priority[]' "${ACTIVE_SETTINGS}")
+    done
 
     # Drop active uplink if it failed
     case "${active}" in
@@ -1160,7 +1271,7 @@ main_loop() {
 
     if [ $((now - last_summary_epoch)) -ge "${SUMMARY_INTERVAL}" ]; then
       cellular_summary="$(cellular_status_text | sed 's/^cellular state //')"
-      wifi_summary_reason="$(wifi_status_reason "${wifi_enabled}" "$(ip link show wlan0 >/dev/null 2>&1 && printf true || printf false)" "$(jq -r '.network.wifi_client.ssid // ""' "${ACTIVE_SETTINGS}")" "$(service_active "wpa_supplicant@wlan0.service" && printf true || printf false)" "$(wpa_status_value wpa_state)" "$(iw dev wlan0 link 2>/dev/null | awk -F': ' '/SSID:/ {print $2; exit}')" "$(interface_addr wlan0)" "${wifi_internet}")"
+      wifi_summary_reason="$(wifi_status_reason "${wifi_enabled}" "$(ip link show wlan0 >/dev/null 2>&1 && printf true || printf false)" "$(settings_value '.network.wifi_client.ssid // ""' "")" "$(service_active "wpa_supplicant@wlan0.service" && printf true || printf false)" "$(wpa_status_value wpa_state)" "$(wifi_link_value ssid)" "$(interface_addr wlan0)" "${wifi_internet}")"
       log "summary active=${active} active_duration=$(stats_value '.active_duration_seconds // 0')s network_down=$(stats_value '.network.current_down_seconds // 0')s last_switch_duration=$(stats_value '.last_switch.duration_seconds // 0')s eth0(eligible=${eth0_eligible},internet=${eth0_internet},fail=${eth0_fail},down=$(stats_value '.interfaces.eth0.current_down_seconds // 0')s,addr=$(interface_addr eth0)) eth1(eligible=${eth1_eligible},internet=${eth1_internet},fail=${eth1_fail},down=$(stats_value '.interfaces.eth1.current_down_seconds // 0')s,addr=$(interface_addr eth1)) wifi(eligible=${wifi_eligible},internet=${wifi_internet},fail=${wifi_fail},down=$(stats_value '.interfaces.wifi_client.current_down_seconds // 0')s,reason=${wifi_summary_reason},addr=$(interface_addr wlan0)) cellular(eligible=${cellular_eligible},internet=${cellular_internet},fail=${cellular_fail},down=$(stats_value '.interfaces.cellular.current_down_seconds // 0')s,${cellular_summary})"
       last_summary_epoch="${now}"
     fi

@@ -69,6 +69,8 @@ mmdebstrap:
 
     - iproute2
     - iputils-ping
+    - cloud-guest-utils
+    - e2fsprogs
     - iw
     - wireless-regdb
     - wpasupplicant
