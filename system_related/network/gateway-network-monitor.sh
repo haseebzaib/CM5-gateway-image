@@ -27,7 +27,7 @@ CELLULARCTL="${BASE_DIR}/scripts/gateway-cellular-qmi"
 TAILSCALE_BOOTSTRAP_SERVICE="gateway-tailscale-bootstrap.service"
 TAILSCALE_ENV_FILE="${BASE_DIR}/secrets/tailscale.env"
 
-MONITOR_INTERVAL=5
+MONITOR_INTERVAL=2
 SUMMARY_INTERVAL=60
 RECOVERY_COOLDOWN=30
 APPLY_GRACE_PERIOD=20
@@ -35,6 +35,7 @@ CELLULAR_RETRY_MIN_INTERVAL=60
 CELLULAR_RETRY_MAX_INTERVAL=300
 TAILSCALE_RECOVERY_COOLDOWN=180
 TAILSCALE_HEALTH_INTERVAL=60
+MIN_VALID_EPOCH=1704067200
 
 log() {
   logger -t "${LOG_TAG}" "$*" || true
@@ -71,6 +72,23 @@ safe_bool() {
     true|false) printf '%s\n' "${value}" ;;
     *) printf '%s\n' "${fallback}" ;;
   esac
+}
+
+time_is_valid() {
+  local epoch="$1"
+  epoch="$(safe_int "${epoch}" 0)"
+  [ "${epoch}" -ge "${MIN_VALID_EPOCH}" ]
+}
+
+sanitize_epoch_for_now() {
+  local epoch="$1" now="$2"
+  epoch="$(safe_int "${epoch}" 0)"
+  now="$(safe_int "${now}" 0)"
+  if [ "${epoch}" -gt 0 ] && time_is_valid "${now}" && ! time_is_valid "${epoch}"; then
+    printf '0\n'
+  else
+    printf '%s\n' "${epoch}"
+  fi
 }
 
 json_file_value() {
@@ -182,6 +200,10 @@ interface_link() {
 
 interface_addr() {
   ip -4 -o addr show dev "$1" 2>/dev/null | awk '{print $4}' | head -n1 || true
+}
+
+interface_default_route() {
+  ip -4 route show default dev "$1" 2>/dev/null | head -n1 || true
 }
 
 unit_enabled() {
@@ -324,7 +346,7 @@ run_apply() {
 internet_ok() {
   local iface="$1" target
   for target in "${CONNECTIVITY_TARGETS[@]}"; do
-    if ping -I "${iface}" -c 1 -W 2 "${target}" >/dev/null 2>&1; then
+    if ping -I "${iface}" -c 1 -W 1 "${target}" >/dev/null 2>&1; then
       return 0
     fi
   done
@@ -348,6 +370,28 @@ effective_ready() {
   [ "${link}" = "true" ] || return 1
   [ -n "${address}" ] || return 1
   if [ "${require_check}" = "true" ]; then internet_ok "${iface}"; else return 0; fi
+}
+
+cellular_effective_ready() {
+  local require_check="$1" present sim_status connected address internet_state
+  present="$(safe_bool "$(cellular_value '.present // false' false)" false)"
+  sim_status="$(cellular_value '.sim_status // "unknown"' unknown)"
+  connected="$(safe_bool "$(cellular_value '.connected // false' false)" false)"
+  address="$(cellular_value '.address // ""' "")"
+  internet_state="$(safe_bool "$(cellular_value '.internet_ok // false' false)" false)"
+
+  [ "${present}" = "true" ] || return 1
+  case "${sim_status}" in
+    ready|present) ;;
+    *) return 1 ;;
+  esac
+  [ "${connected}" = "true" ] || return 1
+  [ -n "${address}" ] || return 1
+  if [ "${require_check}" = "true" ]; then
+    [ "${internet_state}" = "true" ]
+  else
+    return 0
+  fi
 }
 
 monitor_value() { json_file_value "${MONITOR_STATE_FILE}" "$1" ""; }
@@ -406,6 +450,7 @@ epoch_to_iso() {
   local epoch="$1"
   epoch="$(safe_int "${epoch}" 0)"
   [ "${epoch}" -gt 0 ] || { printf ''; return 0; }
+  time_is_valid "${epoch}" || { printf ''; return 0; }
   date --date="@${epoch}" --iso-8601=seconds 2>/dev/null || date --iso-8601=seconds
 }
 
@@ -426,6 +471,10 @@ interface_timing_json() {
   prev_events="$(safe_int "${prev_events}" 0)"
   prev_last_duration="$(safe_int "${prev_last_duration}" 0)"
   now="$(safe_int "${now}" "$(date +%s)")"
+  prev_down_since="$(sanitize_epoch_for_now "${prev_down_since}" "${now}")"
+  if [ "${prev_down_since}" -eq 0 ] && time_is_valid "${now}" && ! time_is_valid "$(stats_value ".interfaces[\"${key}\"].down_since_epoch // 0")"; then
+    prev_last_down=""
+  fi
 
   down_since="${prev_down_since}"
   current_down=0
@@ -522,6 +571,11 @@ update_uplink_stats() {
   prev_network_total="$(safe_int "${prev_network_total}" 0)"
   prev_network_events="$(safe_int "${prev_network_events}" 0)"
   prev_network_last_duration="$(safe_int "${prev_network_last_duration}" 0)"
+  now="$(safe_int "${now}" "$(date +%s)")"
+  prev_active_since="$(sanitize_epoch_for_now "${prev_active_since}" "${now}")"
+  prev_started_epoch="$(sanitize_epoch_for_now "${prev_started_epoch}" "${now}")"
+  prev_network_down_since="$(sanitize_epoch_for_now "${prev_network_down_since}" "${now}")"
+  [ "${prev_started_epoch}" -gt 0 ] || prev_started_timestamp=""
 
   [ "${prev_started_epoch}" -gt 0 ] || prev_started_epoch="${now}"
   [ -n "${prev_started_timestamp}" ] || prev_started_timestamp="$(epoch_to_iso "${now}")"
@@ -684,11 +738,21 @@ sample_uplink() {
   current_ready="false"
   internet_state="false"
 
-  if [ "${enabled}" = "true" ] && effective_ready "${iface}" "${require_check}"; then
-    current_ready="true"
+  if [ "${enabled}" = "true" ]; then
+    if [ "${key}" = "cellular" ]; then
+      internet_state="$(safe_bool "$(cellular_value '.internet_ok // false' false)" false)"
+      if cellular_effective_ready "${require_check}"; then
+        current_ready="true"
+      fi
+    elif effective_ready "${iface}" "${require_check}"; then
+      current_ready="true"
+      [ "${require_check}" = "true" ] && internet_state="true"
+    fi
+  fi
+
+  if [ "${current_ready}" = "true" ]; then
     ready_count=$((ready_count + 1))
     fail_count=0
-    [ "${require_check}" = "true" ] && internet_state="true"
   else
     fail_count=$((fail_count + 1))
     ready_count=0
@@ -776,6 +840,7 @@ write_state_snapshot() {
   local eth0_link eth0_up eth0_addr eth0_internet
   local eth1_link eth1_up eth1_addr eth1_internet
   local wifi_present wifi_up wifi_link wifi_addr wifi_internet wifi_ssid ap_clients
+  local wifi_default_route
   local wifi_configured_ssid wifi_hidden wifi_security wifi_band wifi_country wifi_dhcp wifi_metric
   local wifi_service_active wifi_service_enabled wifi_wpa_state wifi_wpa_ssid wifi_wpa_bssid
   local wifi_bssid wifi_freq wifi_signal wifi_tx_bitrate wifi_reason wifi_ap_enabled
@@ -819,12 +884,13 @@ write_state_snapshot() {
     wifi_up="$(interface_up wlan0)"
     wifi_link="$(interface_link wlan0)"
     wifi_addr="$(interface_addr wlan0)"
+    wifi_default_route="$(interface_default_route wlan0)"
     wifi_ssid="$(wifi_link_value ssid)"
     ap_clients="$(iw dev wlan0 station dump 2>/dev/null | grep -c '^Station' || true)"
     wifi_internet="$(monitor_value '.uplinks["wifi_client"].internet_ok // false')"
   else
     wifi_present="false"; wifi_up="false"; wifi_link="false"
-    wifi_addr=""; wifi_ssid=""; ap_clients=0; wifi_internet="false"
+    wifi_addr=""; wifi_default_route=""; wifi_ssid=""; ap_clients=0; wifi_internet="false"
   fi
   wifi_configured_ssid="$(settings_value '.network.wifi_client.ssid // ""' "")"
   wifi_hidden="$(safe_bool "$(settings_value '.network.wifi_client.hidden_ssid // false' false)" false)"
@@ -947,6 +1013,7 @@ write_state_snapshot() {
       "supplicant_ssid": $(json_escape "${wifi_wpa_ssid}"),
       "supplicant_bssid": $(json_escape "${wifi_wpa_bssid}"),
       "connected_bssid": $(json_escape "${wifi_bssid}"),
+      "default_route": $(json_escape "${wifi_default_route}"),
       "frequency_mhz": $(json_escape "${wifi_freq}"),
       "signal_dbm": $(json_escape "${wifi_signal}"),
       "tx_bitrate": $(json_escape "${wifi_tx_bitrate}")
@@ -979,13 +1046,13 @@ attempt_runtime_recovery() {
 }
 
 trigger_tailscale_recovery() {
-  local reason="$1" now="$2" last_epoch trigger_count unit_sub_state
+  local reason="$1" now="$2" force="${3:-false}" last_epoch trigger_count unit_sub_state
   command -v tailscale >/dev/null 2>&1 || return 0
   systemctl list-unit-files "${TAILSCALE_BOOTSTRAP_SERVICE}" >/dev/null 2>&1 || return 0
   unit_sub_state="$(systemctl show -p SubState --value "${TAILSCALE_BOOTSTRAP_SERVICE}" 2>/dev/null || true)"
   case "${unit_sub_state}" in
     start|start-pre|start-post|reload|reload-signal)
-      return 0
+      [ "${force}" = "true" ] || return 0
       ;;
   esac
 
@@ -993,7 +1060,9 @@ trigger_tailscale_recovery() {
   trigger_count="$(tailscale_recovery_value '.trigger_count // 0')"
   last_epoch="$(safe_int "${last_epoch}" 0)"
   trigger_count="$(safe_int "${trigger_count}" 0)"
-  [ $((now - last_epoch)) -lt "${TAILSCALE_RECOVERY_COOLDOWN}" ] && return 0
+  if [ "${force}" != "true" ] && [ $((now - last_epoch)) -lt "${TAILSCALE_RECOVERY_COOLDOWN}" ]; then
+    return 0
+  fi
 
   trigger_count=$((trigger_count + 1))
   log "tailscale funnel recovery triggered: ${reason}"
@@ -1018,7 +1087,7 @@ tailscale_env_value() {
 }
 
 tailscale_funnel_healthy() {
-  local funnel_enabled funnel_port status
+  local funnel_enabled funnel_port status funnel_url
   command -v tailscale >/dev/null 2>&1 || return 1
   funnel_enabled="$(tailscale_env_value TS_FUNNEL_ENABLE true)"
   [ "${funnel_enabled}" = "true" ] || return 0
@@ -1027,6 +1096,11 @@ tailscale_funnel_healthy() {
   status="$(timeout 20s tailscale funnel status 2>/dev/null || true)"
   printf '%s\n' "${status}" | grep -q 'Funnel on' || return 1
   printf '%s\n' "${status}" | grep -Eq "proxy http://127\\.0\\.0\\.1:${funnel_port}(/|$|[[:space:]])" || return 1
+  if command -v curl >/dev/null 2>&1; then
+    funnel_url="$(printf '%s\n' "${status}" | awk '/^https:\/\// {print $1; exit}')"
+    [ -n "${funnel_url}" ] || return 1
+    timeout 20s curl -fsSI --max-time 10 "${funnel_url}/" >/dev/null 2>&1 || return 1
+  fi
 }
 
 maybe_recover_tailscale_funnel() {
@@ -1036,7 +1110,7 @@ maybe_recover_tailscale_funnel() {
   [ "${active}" != "none" ] || return 0
   [ $((now - last_check_var)) -ge "${TAILSCALE_HEALTH_INTERVAL}" ] || return 0
   if ! tailscale_funnel_healthy; then
-    trigger_tailscale_recovery "tailscale funnel unhealthy on active uplink ${active}" "${now}"
+    trigger_tailscale_recovery "tailscale funnel unhealthy on active uplink ${active}" "${now}" false
   fi
 }
 
@@ -1140,7 +1214,7 @@ main_loop() {
     load_connectivity_targets
 
     require_check="$(safe_bool "$(settings_value '.network.uplink.require_connectivity_check // true' true)" true)"
-    stable_seconds="$(safe_int "$(settings_value '.network.uplink.stable_seconds_before_switch // 5' 5)" 5)"
+    stable_seconds="$(safe_int "$(settings_value '.network.uplink.stable_seconds_before_switch // 0' 0)" 0)"
     failback_enabled="$(safe_bool "$(settings_value '.network.uplink.failback_enabled // true' true)" true)"
     fail_threshold="$(safe_int "$(settings_value '.network.uplink.fail_count_threshold // 1' 1)" 1)"
     recover_threshold="$(safe_int "$(settings_value '.network.uplink.recover_count_threshold // 1' 1)" 1)"
@@ -1238,17 +1312,25 @@ main_loop() {
     if [ "${active}" != "${previous_active}" ]; then
       last_switch_timestamp="$(date --iso-8601=seconds)"
       log "active uplink switched: ${previous_active} -> ${active}"
-      trigger_tailscale_recovery "active uplink switched from ${previous_active} to ${active}" "${now}"
+      trigger_tailscale_recovery "active uplink switched from ${previous_active} to ${active}" "${now}" true
       last_tailscale_health_epoch="${now}"
     fi
     [ "${candidate}" = "none" ] && [ "${previous_pending}" != "" ] && log "cleared pending uplink candidate"
 
-    # Recovery: trigger apply if no uplink and wifi services are broken
+    # Recovery: trigger apply if no uplink and wifi services/routing are broken.
+    # Wi-Fi can be associated at WPA level while DHCP/default route is missing,
+    # especially after another uplink disappears. Treat that as recoverable.
     recovery_reason=""
     last_apply_at="$(last_apply_epoch)"
     if [ "${active}" = "none" ] && [ -z "${pending}" ] && [ $((now - last_apply_at)) -ge "${APPLY_GRACE_PERIOD}" ]; then
       if [ "${wifi_enabled}" = "true" ] && ! service_active "wpa_supplicant@wlan0.service"; then
         recovery_reason="wifi enabled but wpa_supplicant@wlan0 is inactive"
+      elif [ "${wifi_enabled}" = "true" ] && [ "$(wpa_status_value wpa_state)" = "COMPLETED" ] && [ -z "$(interface_addr wlan0)" ]; then
+        recovery_reason="wifi associated but wlan0 has no IPv4 address"
+      elif [ "${wifi_enabled}" = "true" ] && [ -n "$(interface_addr wlan0)" ] && [ -z "$(interface_default_route wlan0)" ]; then
+        recovery_reason="wifi has IPv4 address but no default route"
+      elif [ "${wifi_enabled}" = "true" ] && [ "$(interface_link wlan0)" = "true" ] && [ "${wifi_internet}" != "true" ]; then
+        recovery_reason="wifi connected but internet probe failed"
       fi
     fi
     if [ -n "${recovery_reason}" ]; then

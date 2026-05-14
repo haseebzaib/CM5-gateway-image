@@ -69,7 +69,7 @@
         "cellular"
       ],
       "failback_enabled": true,
-      "stable_seconds_before_switch": 5,
+      "stable_seconds_before_switch": 0,
       "require_connectivity_check": true,
       "fail_count_threshold": 1,
       "recover_count_threshold": 1,

@@ -307,7 +307,7 @@ install_networkd_wlan_files() {
 }
 
 generate_wifi_client_files() {
-  local enabled dhcp metric security passphrase ssid hidden country band gateway address dns_list
+  local enabled dhcp metric security passphrase ssid hidden country gateway address dns_list
 
   enabled="$(jq -r '.network.wifi_client.enabled' "${ACTIVE_SETTINGS}")"
   [ "${enabled}" = "true" ] || return 0
@@ -317,7 +317,6 @@ generate_wifi_client_files() {
   ssid="$(jq -r '.network.wifi_client.ssid' "${ACTIVE_SETTINGS}")"
   hidden="$(jq -r '.network.wifi_client.hidden_ssid' "${ACTIVE_SETTINGS}")"
   country="$(jq -r '.network.wifi_client.country_code' "${ACTIVE_SETTINGS}")"
-  band="$(jq -r '.network.wifi_client.band' "${ACTIVE_SETTINGS}")"
 
   cat > "${GENERATED_DIR}/wpa_supplicant/wpa_supplicant-wlan0.conf" <<EOF
 ctrl_interface=DIR=/run/wpa_supplicant GROUP=netdev
@@ -336,11 +335,6 @@ EOF
   esac
 
   [ "${hidden}" = "true" ] && printf '    scan_ssid=1\n' >> "${GENERATED_DIR}/wpa_supplicant/wpa_supplicant-wlan0.conf"
-
-  case "${band}" in
-    2.4ghz) printf '    freq_list=2412 2437 2462\n' >> "${GENERATED_DIR}/wpa_supplicant/wpa_supplicant-wlan0.conf" ;;
-    5ghz)   printf '    freq_list=5180 5200 5220 5240 5745 5765 5785 5805\n' >> "${GENERATED_DIR}/wpa_supplicant/wpa_supplicant-wlan0.conf" ;;
-  esac
 
   printf '}\n' >> "${GENERATED_DIR}/wpa_supplicant/wpa_supplicant-wlan0.conf"
 
